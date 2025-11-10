@@ -18,3 +18,10 @@ DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 
 # Configuración de caché en memoria para métricas recientes
 CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "500"))
+
+# Usuarios permitidos para autenticación básica (email -> {name, password})
+# Nota: Para producción, use almacenamiento seguro y hash de contraseñas.
+ALLOWED_USERS = {
+    "rlarenas@wingsoft.com": {"name": "Ramiro Larenas", "password": "q0<>E55NV"},
+    "jguajardo@wingsoft.com": {"name": "Joaquín Guajardo", "password": "FM5|47Gv"},
+}

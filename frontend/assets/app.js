@@ -28,12 +28,12 @@ function getApiBase() {
 }
 
 function fetchJSON(url, opts = {}) {
-  const headers = {};
+  const headers = { ...(opts.headers || {}) };
   const token = getDashboardToken();
   if (token) headers['X-Dashboard-Token'] = token;
   const apiBase = getApiBase();
   const fullUrl = url.startsWith('http') ? url : `${apiBase}${url}`;
-  return fetch(fullUrl, { headers, ...opts }).then(async (r) => {
+  return fetch(fullUrl, { ...opts, headers }).then(async (r) => {
     const ct = r.headers.get('content-type') || '';
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     if (!ct.includes('application/json')) throw new Error('Respuesta no JSON');
@@ -98,6 +98,10 @@ function App() {
   const { demo } = useQuery();
   const apiBase = getApiBase();
   const [apiBaseInput, setApiBaseInput] = useState(apiBase);
+  const [authed, setAuthed] = useState(!!getDashboardToken());
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [servers, setServers] = useState([]);
   const [selected, setSelected] = useState('');
   const [history, setHistory] = useState([]);
@@ -113,6 +117,11 @@ function App() {
       setHistory(d.history);
       return;
     }
+    const token = getDashboardToken();
+    if (!token) {
+      setStatus({ ok: false, message: 'No autenticado' });
+      return;
+    }
     try {
       const health = await fetchJSON('/api/health');
       setStatus({ ok: !!health.ok, message: health.ok ? '' : 'Backend no disponible' });
@@ -126,7 +135,13 @@ function App() {
     }
   };
 
-  useEffect(() => { load(); const id = setInterval(load, 3000); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    if (authed || demo) {
+      load();
+      const id = setInterval(load, 3000);
+      return () => clearInterval(id);
+    }
+  }, [authed]);
 
   useEffect(() => {
     // Cuando cambia el servidor seleccionado, cargar su historial sin afectar otros estados
@@ -160,6 +175,30 @@ function App() {
     }
   };
 
+  const handleLogin = async () => {
+    setLoginError('');
+    try {
+      const res = await fetchJSON('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      if (res && res.token) {
+        try { localStorage.setItem('dashboard_token', res.token); } catch {}
+        setAuthed(true);
+        setStatus({ ok: true, message: '' });
+      }
+    } catch (e) {
+      setLoginError('Credenciales inválidas.');
+      console.error('Login error', e);
+    }
+  };
+
+  const handleLogout = async () => {
+    try { await fetchJSON('/api/logout', { method: 'POST' }); } catch {}
+    try { localStorage.removeItem('dashboard_token'); } catch {}
+    setAuthed(false);
+    setServers([]);
+    setSelected('');
+    setHistory([]);
+  };
+
   const AlertInput = (key, label) => (
     React.createElement('div', { className: 'card' },
       React.createElement('div', null, label),
@@ -167,6 +206,23 @@ function App() {
       React.createElement('div', { className: 'muted' }, 'Umbral %')
     )
   );
+
+  if (!authed && !demo) {
+    return (
+      React.createElement('div', { className: 'wrap', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' } },
+        React.createElement('div', { className: 'card', style: { maxWidth: 420, width: '100%' } },
+          React.createElement('div', { className: 'title' }, 'Acceso al Dashboard'),
+          React.createElement('div', { className: 'muted', style: { marginBottom: 12 } }, 'Ingrese sus credenciales'),
+          React.createElement('div', { style: { display: 'grid', gap: 12 } },
+            React.createElement('input', { type: 'text', placeholder: 'Correo, usuario o nombre', value: email, onChange: e => setEmail(e.target.value) }),
+            React.createElement('input', { type: 'password', placeholder: 'Contraseña', value: password, onChange: e => setPassword(e.target.value) }),
+            loginError && React.createElement('div', { style: { color: '#ef4444' } }, loginError),
+            React.createElement('button', { onClick: handleLogin }, 'Entrar')
+          )
+        )
+      )
+    );
+  }
 
   return (
     React.createElement('div', { className: 'wrap' },
@@ -191,6 +247,9 @@ function App() {
               load();
             }
           }, 'Guardar API')
+        ),
+        !demo && React.createElement('div', { style: { marginLeft: 'auto' } },
+          React.createElement('button', { onClick: handleLogout }, 'Salir')
         )
       ),
       !status.ok && React.createElement('div', { className: 'card', style: { border: '1px solid #ef4444', marginBottom: 12 } },

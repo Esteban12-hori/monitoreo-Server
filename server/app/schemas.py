@@ -50,3 +50,7 @@ class AlertConfigSchema(BaseModel):
     cpu_total_percent: float
     memory_used_percent: float
     disk_used_percent: float
+
+class LoginSchema(BaseModel):
+    email: str
+    password: str

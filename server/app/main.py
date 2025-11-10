@@ -6,10 +6,12 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
+import uuid
+import unicodedata
 
-from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS
+from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
 from .models import Base, Server, Metric, AlertConfig
-from .schemas import MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema
+from .schemas import MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema
 
 
 def get_engine():
@@ -53,10 +55,67 @@ def startup():
 _cache: dict[str, list[dict]] = {}
 _cache_order: dict[str, int] = {}
 
+# Sesiones en memoria: token -> { email, name }
+_sessions: dict[str, dict] = {}
+
+
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    try:
+        s = unicodedata.normalize('NFKD', s)
+        s = ''.join(c for c in s if not unicodedata.combining(c))
+    except Exception:
+        pass
+    return s
+
 
 def _check_dashboard_token(x_dashboard_token: Optional[str]):
-    if DASHBOARD_TOKEN and x_dashboard_token != DASHBOARD_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
+    # Requiere token válido ya sea por env o sesión creada via login
+    if DASHBOARD_TOKEN:
+        if x_dashboard_token == DASHBOARD_TOKEN:
+            return
+    # Validar token de sesión
+    if x_dashboard_token and x_dashboard_token in _sessions:
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
+
+
+@app.post("/api/login")
+def login(payload: LoginSchema):
+    identifier = _norm(payload.email or "")
+    password = (payload.password or "").strip()
+    user = None
+    # Buscar por correo exacto
+    for email, info in ALLOWED_USERS.items():
+        if _norm(email) == identifier:
+            user = {"email": email, **info}
+            break
+    # Si no se encontró, buscar por nombre (usuario)
+    if not user:
+        for email, info in ALLOWED_USERS.items():
+            if _norm(info.get("name", "")) == identifier:
+                user = {"email": email, **info}
+                break
+    # Si no se encontró, probar con usuario corto (parte local del correo antes de @)
+    if not user:
+        for email, info in ALLOWED_USERS.items():
+            local = email.split('@')[0]
+            if _norm(local) == identifier:
+                user = {"email": email, **info}
+                break
+    if not user or user.get("password") != password:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    token = uuid.uuid4().hex
+    _sessions[token] = {"email": user.get("email"), "name": user.get("name")}
+    return {"token": token, "email": user.get("email"), "name": user.get("name")}
+
+
+@app.post("/api/logout")
+def logout(x_dashboard_token: Optional[str] = Header(None)):
+    if x_dashboard_token and x_dashboard_token in _sessions:
+        _sessions.pop(x_dashboard_token, None)
+        return {"status": "logged_out"}
+    raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
 
 
 @app.post("/api/register")
@@ -74,7 +133,8 @@ def register_server(payload: RegisterServerSchema):
 
 
 @app.get("/api/servers")
-def list_servers():
+def list_servers(x_dashboard_token: Optional[str] = Header(None)):
+    _check_dashboard_token(x_dashboard_token)
     with Session(engine) as sess:
         servers = sess.execute(select(Server)).scalars().all()
         return [{"server_id": s.server_id, "created_at": str(s.created_at)} for s in servers]
