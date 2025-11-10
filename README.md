@@ -55,17 +55,16 @@ frontend/                  → Dashboard web vía CDN (sin build)
 ## 🧪 Demo del Dashboard
 
 1. Iniciar un servidor HTTP simple:
-   ```bash
+ 
    cd frontend/
    python -m http.server 8000
-````
+
 
 2. Abrir en el navegador:
 
-   ```
+   
    http://localhost:8000/index.html?demo=1
-   ```
-
+ 
 ---
 
 ## ⚙️ Backend (FastAPI)
@@ -271,7 +270,7 @@ curl -X POST "https://tu-dominio.com/api/alerts" \
 | ⚠️ Agente sin enviar métricas | Token o `server_id` incorrectos   | Revisa configuración del agente                                   |
 | 🔐 Error TLS                  | Certificado incorrecto            | Usa `--verify /etc/ssl/certs/ca-certificates.crt` o Let’s Encrypt |
 
----
+
 
 ## 📍 Próximos Pasos
 
@@ -279,18 +278,14 @@ curl -X POST "https://tu-dominio.com/api/alerts" \
 * 🔄 Añadir **WebSockets/SSE** para métricas en tiempo real
 * 📤 Exportar métricas a **Prometheus / OpenTelemetry**
 
----
+
 
 > 🛠️ Desarrollado con ❤️ para entornos Linux modernos.
 
-```
-
----
 
 ✅ **Instrucciones:**  
 1. Crea un archivo llamado `README.md` en la raíz de tu repositorio.  
 2. Copia todo el texto de arriba y pégalo allí.  
 3. GitHub lo renderizará automáticamente con íconos, tablas y formato completo.  
 
-¿Quieres que te prepare una **versión con badges (estado del build, licencia, versión, etc.)** para ponerla en la parte superior del README? Puedo generarla también.
-```
+
