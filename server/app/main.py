@@ -70,11 +70,7 @@ def _norm(s: str) -> str:
 
 
 def _check_dashboard_token(x_dashboard_token: Optional[str]):
-    # Requiere token válido ya sea por env o sesión creada via login
-    if DASHBOARD_TOKEN:
-        if x_dashboard_token == DASHBOARD_TOKEN:
-            return
-    # Validar token de sesión
+    # Solo aceptar tokens de sesión emitidos por /api/login
     if x_dashboard_token and x_dashboard_token in _sessions:
         return
     raise HTTPException(status_code=401, detail="Unauthorized dashboard token")

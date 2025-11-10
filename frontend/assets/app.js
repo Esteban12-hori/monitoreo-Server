@@ -1,18 +1,14 @@
 const { useEffect, useState, useRef } = React;
 
-// Configuración de token del dashboard (leer de localStorage o query param)
+// Token del dashboard solo desde localStorage (emitido por login)
 function getDashboardToken() {
-  const q = new URLSearchParams(window.location.search);
-  const token = q.get('token') || localStorage.getItem('dashboard_token') || '';
-  if (token) localStorage.setItem('dashboard_token', token);
+  const token = localStorage.getItem('dashboard_token') || '';
   return token;
 }
 
 function useQuery() {
-  const q = new URLSearchParams(window.location.search);
-  return {
-    demo: q.get('demo') === '1',
-  };
+  // Deshabilitar demo en producción: siempre requiere login
+  return { demo: false };
 }
 
 function getApiBase() {
@@ -131,7 +127,14 @@ function App() {
       setAlerts(cfg);
     } catch (e) {
       console.error('Error cargando datos', e);
-      setStatus({ ok: false, message: `Error de conexión${e && e.message ? ': ' + e.message : ''}` });
+      const msg = e && e.message ? String(e.message) : '';
+      if (msg.includes('HTTP 401')) {
+        try { localStorage.removeItem('dashboard_token'); } catch {}
+        setAuthed(false);
+        setStatus({ ok: false, message: 'Sesión expirada o inválida. Inicie sesión.' });
+      } else {
+        setStatus({ ok: false, message: `Error de conexión${msg ? ': ' + msg : ''}` });
+      }
     }
   };
 
@@ -152,6 +155,12 @@ function App() {
         setHistory(hist);
       } catch (e) {
         console.error('Error cargando historial', e);
+        const msg = e && e.message ? String(e.message) : '';
+        if (msg.includes('HTTP 401')) {
+          try { localStorage.removeItem('dashboard_token'); } catch {}
+          setAuthed(false);
+          setStatus({ ok: false, message: 'Sesión expirada o inválida. Inicie sesión.' });
+        }
       }
     };
     if (!demo) fetchHistory();
