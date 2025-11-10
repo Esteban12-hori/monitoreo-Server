@@ -164,6 +164,38 @@ export CACHE_MAX_ITEMS=1000
 
 ## 🧩 Despliegue en Producción
 
+### 🚢 Despliegue Automatizado con Docker Compose (recomendado)
+
+Requisitos: Docker Desktop (Windows/macOS) o Docker Engine (Linux).
+
+1. Ejecuta en PowerShell desde la raíz del repo (Windows):
+
+   ```powershell
+   ./scripts/deploy.ps1 -Token "<DASHBOARD_TOKEN opcional>" -CacheMaxItems 500 -WebPort 8080
+   ```
+
+   Parámetros:
+   - `Token`: valor para `DASHBOARD_TOKEN` (opcional)
+   - `CacheMaxItems`: tamaño de caché en memoria (por defecto `500`)
+   - `WebPort`: puerto externo del Nginx (por defecto `80`)
+
+2. En Linux/macOS, usa el script Bash equivalente:
+
+   ```bash
+   ./scripts/deploy.sh -t "<DASHBOARD_TOKEN opcional>" -c 500 -p 8080
+   ```
+
+3. Accede al dashboard:
+   - `http://localhost:<WebPort>`
+   - Salud del backend: `http://localhost:<WebPort>/api/health`
+
+¿Qué se levanta?
+- `backend`: FastAPI con Uvicorn en `8000`, con volumen persistente para `server/data/monitor.db`.
+- `web`: Nginx sirviendo `frontend/` y proxy de `/api` a `backend:8000` (mismo origen, sin CORS).
+
+Para servidores con dominio y HTTPS, coloca un reverse proxy (Caddy/Traefik/Nginx) delante del contenedor `web` y configura certificados.
+
+
 ### 🔧 Requisitos
 
 * `python >= 3.10`, `nginx`, `openssl` o `certbot`
@@ -286,6 +318,6 @@ curl -X POST "https://tu-dominio.com/api/alerts" \
 ✅ **Instrucciones:**  
 1. Crea un archivo llamado `README.md` en la raíz de tu repositorio.  
 2. Copia todo el texto de arriba y pégalo allí.  
-3. GitHub lo renderizará automáticamente con íconos, tablas y formato completo.  
+3. GitHub lo renderizará automáticamente con íconos, tablas y formato completo.
 
 
