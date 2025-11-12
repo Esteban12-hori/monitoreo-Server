@@ -1,101 +1,88 @@
+# 🧩 Sistema de Monitoreo Integral para Servidores Linux (sin Docker)
 
-# 🧩 Sistema de Monitoreo Integral para Servidores Linux
-
-Un sistema **modular y distribuido** de monitoreo en tiempo real para entornos Linux.  
-Incluye agente ligero, API segura y un panel web interactivo con gráficos y alertas.
-
----
-
-## 🚀 Características Principales
-
-- 🐍 **Agente ligero (Python)**: recolecta métricas del sistema.
-- ⚙️ **Backend (FastAPI)**: gestiona almacenamiento, tokens y API segura.
-- 📊 **Dashboard Web (React + Chart.js)**: visualiza métricas en tiempo real e histórico.
-- 🧠 **Gestión de alertas**: define umbrales personalizados.
-- 🔐 **Autenticación y TLS**: tokens únicos y soporte de certificados autofirmados.
+Un sistema modular de monitoreo en tiempo real sin dependencia de Docker. Incluye:
+- Agente ligero (Python)
+- Backend (FastAPI + SQLite)
+- Dashboard web estático (React + Chart.js)
 
 ---
 
-## 📈 Métricas Soportadas
-
-| Categoría | Métricas |
-|------------|-----------|
-| **Memoria RAM** | Total, usada, libre, caché |
-| **CPU** | Uso total y por núcleo |
-| **Disco** | Espacio disponible, usado y porcentaje |
-| **Docker** | Contenedores activos, estado y uso básico |
+## 🚀 Características
+- Agente envía métricas de memoria, CPU, disco y contenedores Docker (si están presentes en el host).
+- API segura con tokens por servidor y autenticación para dashboard.
+- Dashboard con gráficos en tiempo real e histórico.
+- Alertas configurables desde el panel.
 
 ---
 
-## 🏗️ Arquitectura del Sistema
-
-```
-
-Agente (Python)  →  Backend (FastAPI + SQLite)  →  Dashboard (React + Chart.js)
-
-```
-
-**Estructura de carpetas:**
-```
-
-agent/python/agent.py      → Recolecta y envía métricas
-server/app/                → Backend con FastAPI y SQLAlchemy
-frontend/                  → Dashboard web vía CDN (sin build)
-
-````
-
-### 🔒 Comunicación Segura
-
-- HTTPS / TLS entre agente y backend  
-- Token único por servidor (`X-Auth-Token`)  
-- Token de lectura opcional para dashboard (`X-Dashboard-Token`)
+## 📦 Estructura
+- `agent/python/agent.py`: agente de métricas
+- `server/app/`: backend FastAPI
+- `frontend/`: UI estática
+- `scripts/`: instaladores del agente, backend y frontend (Windows y Linux/macOS)
 
 ---
 
 ## 🧪 Demo del Dashboard
-
-1. Iniciar un servidor HTTP simple:
- 
+1. Iniciar servidor estático local:
+   ```bash
    cd frontend/
    python -m http.server 8000
+   ```
+2. Abrir: `http://localhost:8000/index.html?demo=1`
 
-
-2. Abrir en el navegador:
-
-   
-   http://localhost:8000/index.html?demo=1
- 
 ---
 
 ## ⚙️ Backend (FastAPI)
+Requiere `python >= 3.10`.
 
-Requiere **Python 3.10+**
-
-### Instalación
-
+Instalación rápida (instalador interactivo):
 ```bash
-pip install -r server/requirements.txt
+# Linux/macOS
+./scripts/install_backend.sh
+
+# Windows (PowerShell)
+./scripts/install_backend.ps1
 ```
 
-### Generar certificados TLS (recomendado)
+El instalador:
+- Crea un `venv` dedicado para el backend.
+- Instala dependencias desde `server/requirements.txt`.
+- Genera scripts de ejecución: `run_backend.sh` y `run_backend.ps1`.
+- Opcionalmente configura TLS directo (ruta a `.key` y `.crt`).
 
+Ejecución tras la instalación:
+```bash
+# Linux/macOS
+./run_backend.sh
+
+# Windows (PowerShell)
+./run_backend.ps1
+```
+
+Instalación manual (alternativa):
+```bash
+python3 -m venv /opt/monitor/venv
+/opt/monitor/venv/bin/pip install -r server/requirements.txt
+```
+
+Iniciar detrás de Nginx (recomendado):
+```bash
+/opt/monitor/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 --app-dir server
+```
+
+TLS directo (autofirmado):
 ```bash
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout server/certs/server.key -out server/certs/server.crt \
-  -subj "/CN=localhost"
-```
-
-### Iniciar servidor
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8443 \
+  -subj "/CN=tu-dominio.com"
+/opt/monitor/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8443 \
   --ssl-keyfile server/certs/server.key \
   --ssl-certfile server/certs/server.crt \
   --app-dir server
 ```
 
-**Variables opcionales:**
-
+Variables opcionales:
 ```bash
 export DASHBOARD_TOKEN="<token>"
 export CACHE_MAX_ITEMS=1000
@@ -103,131 +90,68 @@ export CACHE_MAX_ITEMS=1000
 
 ---
 
-## 🔌 Endpoints Principales
-
-| Método       | Endpoint               | Descripción                              |
-| ------------ | ---------------------- | ---------------------------------------- |
-| `POST`       | `/api/register`        | Registra un servidor y devuelve token    |
-| `POST`       | `/api/metrics`         | Envía métricas (requiere `X-Auth-Token`) |
-| `GET`        | `/api/servers`         | Lista de servidores registrados          |
-| `GET`        | `/api/metrics/history` | Historial por servidor                   |
-| `GET / POST` | `/api/alerts`          | Obtiene o actualiza umbrales de alerta   |
+## 🔌 Endpoints
+- `POST /api/register`: registra `server_id` y `token`
+- `POST /api/metrics`: ingesta (header `X-Auth-Token`)
+- `GET /api/servers`: listado (requiere login de dashboard)
+- `GET /api/metrics/history`: historial
+- `GET/POST /api/alerts`: alertas
+- `POST /api/login` / `POST /api/logout`: sesión de dashboard
+- `GET /api/health`: salud backend
 
 ---
 
 ## 🧠 Agente (Python)
+Instalación rápida:
+- Windows: `./scripts/install_agent.ps1`
+- Linux/macOS: `./scripts/install_agent.sh`
 
-1. Configurar variables en `agent/python/agent.py`
-2. Instalar dependencias:
+El asistente verificará dependencias, pedirá parámetros y guardará `agent/python/agent.config.json`.
 
-   ```bash
-   pip install -r agent/python/requirements.txt
-   ```
-3. Ejecutar:
-
-   ```bash
-   python agent.py --server https://<host>:8443 --server-id <ID> --token <TOKEN>
-   ```
-
-**Notas:**
-
-* Bajo consumo: usa `psutil` y llamadas ligeras a Docker.
-* Compatible con Ubuntu / Debian / CentOS.
-
----
-
-## 🧰 Seguridad y Almacenamiento
-
-* Base de datos: **SQLite** (migrable a PostgreSQL en producción)
-* Comunicación segura con **TLS obligatorio**
-* Tokens individuales por servidor
-* Token opcional de dashboard para acceso de solo lectura
-
----
-
-## 🌐 Integraciones
-
-* API REST JSON
-* Extensible con **Webhooks**, **SSE** o **WebSockets**
-* Exportación futura: **Prometheus / OpenTelemetry**
-
----
-
-## ⚡ Flujo con Datos Reales
-
-1. Registrar servidor vía `POST /api/register`
-2. Ejecutar agente con su `server_id` y `token`
-3. Configurar `DASHBOARD_TOKEN` (opcional)
-4. Abrir dashboard sin `?demo=1`
-
----
-
-## 🧩 Despliegue en Producción
-
-### 🚢 Despliegue Automatizado con Docker Compose (recomendado)
-
-Requisitos: Docker Desktop (Windows/macOS) o Docker Engine (Linux).
-
-1. Ejecuta en PowerShell desde la raíz del repo (Windows):
-
-   ```powershell
-   ./scripts/deploy.ps1 -Token "<DASHBOARD_TOKEN opcional>" -CacheMaxItems 500 -WebPort 8080
-   ```
-
-   Parámetros:
-   - `Token`: valor para `DASHBOARD_TOKEN` (opcional)
-   - `CacheMaxItems`: tamaño de caché en memoria (por defecto `500`)
-   - `WebPort`: puerto externo del Nginx (por defecto `80`)
-
-2. En Linux/macOS, usa el script Bash equivalente:
-
-   ```bash
-   ./scripts/deploy.sh -t "<DASHBOARD_TOKEN opcional>" -c 500 -p 8080
-   ```
-
-3. Accede al dashboard:
-   - `http://localhost:<WebPort>`
-   - Salud del backend: `http://localhost:<WebPort>/api/health`
-
-¿Qué se levanta?
-- `backend`: FastAPI con Uvicorn en `8000`, con volumen persistente para `server/data/monitor.db`.
-- `web`: Nginx sirviendo `frontend/` y proxy de `/api` a `backend:8000` (mismo origen, sin CORS).
-
-Para servidores con dominio y HTTPS, coloca un reverse proxy (Caddy/Traefik/Nginx) delante del contenedor `web` y configura certificados.
-
-
-### 🔧 Requisitos
-
-* `python >= 3.10`, `nginx`, `openssl` o `certbot`
-* Puertos `80` y `443` abiertos
-
-### 🖥️ Configuración del Backend
-
+Ejecutar agente:
 ```bash
-python3 -m venv /opt/monitor/venv
-/opt/monitor/venv/bin/pip install -r server/requirements.txt
+python agent/python/agent.py --config agent/python/agent.config.json
+```
+Opcional sin config:
+```bash
+python agent/python/agent.py --server https://tu-dominio --server-id srv-01 --token TOKEN_SRV_01 --interval 5 --verify /etc/ssl/certs/ca-certificates.crt
 ```
 
-#### Opción A — TLS en Nginx (recomendado)
-
+Diagnóstico:
 ```bash
-/opt/monitor/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 --app-dir server
+python agent/python/diagnose.py
 ```
 
-#### Opción B — TLS directo en Uvicorn (autofirmado)
+Logs: `agent/python/logs/agent.log`
 
+---
+
+## 🖼️ Frontend (estático)
+Despliegue rápido (instalador interactivo):
 ```bash
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout server/certs/server.key -out server/certs/server.crt \
-  -subj "/CN=tu-dominio.com"
-uvicorn app.main:app --host 0.0.0.0 --port 8443 \
-  --ssl-keyfile server/certs/server.key \
-  --ssl-certfile server/certs/server.crt \
-  --app-dir server
+# Linux/macOS
+./scripts/install_frontend.sh
+
+# Windows (PowerShell)
+./scripts/install_frontend.ps1
 ```
 
-### 🌍 Configuración de Nginx
+El instalador:
+- Copia los archivos estáticos de `frontend/` al web root indicado (por ejemplo, `/var/www/monitor/frontend`).
+- Opcionalmente genera una configuración Nginx desde la plantilla `deploy/nginx/host.conf.template`.
+- Muestra instrucciones para habilitar el sitio y recargar Nginx.
 
+Plantilla Nginx disponible:
+- `deploy/nginx/host.conf.template` con placeholders de `server_name`, upstream de backend y `root` del frontend.
+
+---
+
+## 🧩 Despliegue en Producción (sin Docker)
+1. Backend con Uvicorn (ver sección Backend).
+2. Frontend estático en Nginx (`/var/www/monitor/frontend`).
+3. Proxy `/api` a Uvicorn.
+
+Ejemplo Nginx:
 ```nginx
 server {
   listen 443 ssl;
@@ -244,80 +168,35 @@ server {
   location / {
     root /var/www/monitor/frontend;
     index index.html;
+    try_files $uri /index.html;
   }
 }
 ```
 
----
-
-## 🧾 Ejemplo de Servicio Systemd (Agente)
-
-```ini
-[Unit]
-Description=Monitor Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/ubuntu/monitor-agent/bin/python /opt/monitor/agent/python/agent.py \
-  --server https://tu-dominio.com --server-id srv-01 --token TOKEN_SRV_01 \
-  --interval 5 --verify /etc/ssl/certs/ca-certificates.crt
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
+Requisitos: `nginx`, `openssl/certbot`, puertos `80/443` abiertos.
+ 
+Sugerencia: usar los instaladores
+- Backend: `./scripts/install_backend.sh` o `./scripts/install_backend.ps1` para crear venv y scripts de ejecución.
+- Frontend: `./scripts/install_frontend.sh` o `./scripts/install_frontend.ps1` para copiar estáticos y generar config Nginx.
 
 ---
 
-## 🚨 Gestión de Alertas
-
-### Consultar alertas
-
-```bash
-curl -s "https://tu-dominio.com/api/alerts" \
-  -H "X-Dashboard-Token: <DASHBOARD_TOKEN>"
-```
-
-### Actualizar umbrales
-
-```bash
-curl -X POST "https://tu-dominio.com/api/alerts" \
-  -H "Content-Type: application/json" \
-  -H "X-Dashboard-Token: <DASHBOARD_TOKEN>" \
-  -d '{
-    "cpu_total_percent": 85,
-    "memory_used_percent": 80,
-    "disk_used_percent": 90
-  }'
-```
+## 🧩 Flujo de Datos Real
+1. `POST /api/register` con `server_id` + `token`
+2. Ejecutar agente
+3. Login en dashboard (`/api/login`)
+4. Consultar historial y alertas
 
 ---
 
-## 🧩 Resolución de Problemas
+## 🛠️ Solución de Problemas
+- 404 en `/api/*`: revisar Nginx y que Uvicorn esté activo.
+- 403 en `/api/metrics`: token no coincide con registro.
+- TLS: ajustar `--verify` con CA del sistema.
+- Backend sin respuesta: verificar `/api/health` local (`http://127.0.0.1:8001/api/health`).
+ - Diagnóstico backend: `python scripts/diagnose_backend.py --url http://127.0.0.1:8001`
 
-| Situación                     | Posible causa                     | Solución                                                          |
-| ----------------------------- | --------------------------------- | ----------------------------------------------------------------- |
-| 🔴 Banner rojo en dashboard   | Backend inactivo o token inválido | Revisa `/api/health` y el parámetro `?token=`                     |
-| ⚠️ Agente sin enviar métricas | Token o `server_id` incorrectos   | Revisa configuración del agente                                   |
-| 🔐 Error TLS                  | Certificado incorrecto            | Usa `--verify /etc/ssl/certs/ca-certificates.crt` o Let’s Encrypt |
+---
 
-
-
-## 📍 Próximos Pasos
-
-* 🔧 Migrar UI a build con **Vite/React**
-* 🔄 Añadir **WebSockets/SSE** para métricas en tiempo real
-* 📤 Exportar métricas a **Prometheus / OpenTelemetry**
-
-
-
-> 🛠️ Desarrollado con ❤️ para entornos Linux modernos.
-
-
-✅ **Instrucciones:**  
-1. Crea un archivo llamado `README.md` en la raíz de tu repositorio.  
-2. Copia todo el texto de arriba y pégalo allí.  
-3. GitHub lo renderizará automáticamente con íconos, tablas y formato completo.
-
-
+## ℹ️ Nota
+El proyecto no incluye ni soporta despliegue con Docker. Todos los pasos están pensados para entornos sin contenedores.
