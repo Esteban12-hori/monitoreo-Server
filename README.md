@@ -124,6 +124,54 @@ python agent/python/diagnose.py
 
 Logs: `agent/python/logs/agent.log`
 
+### ▶️ Ejecutar en segundo plano con PM2 (Linux/macOS)
+PM2 mantiene procesos vivos y los reinicia ante fallos. Requiere Node.js.
+
+1. Instalar PM2 globalmente:
+   ```bash
+   npm install -g pm2
+   ```
+2. Iniciar el agente con PM2 (usando Python 3):
+   ```bash
+   pm2 start agent/python/agent.py \
+     --name monitor-agent \
+     --interpreter python3 \
+     -- \
+     --config agent/python/agent.config.json
+   ```
+   Alternativa sin archivo de configuración:
+   ```bash
+   pm2 start agent/python/agent.py \
+     --name monitor-agent \
+     --interpreter python3 \
+     -- \
+     --server https://tu-dominio \
+     --server-id srv-01 \
+     --token TOKEN_SRV_01 \
+     --interval 5 \
+     --verify /etc/ssl/certs/ca-certificates.crt
+   ```
+3. Ver estado y logs:
+   ```bash
+   pm2 status
+   pm2 logs monitor-agent
+   ```
+4. Persistir al reinicio del servidor:
+   ```bash
+   pm2 save
+   pm2 startup systemd
+   ```
+5. Operaciones habituales:
+   ```bash
+   pm2 restart monitor-agent
+   pm2 stop monitor-agent
+   pm2 delete monitor-agent
+   ```
+
+Notas:
+- PM2 intentará reiniciar el agente si se cae.
+- En Windows se puede usar PM2 con `--interpreter python`, pero el arranque automático requiere configuraciones adicionales.
+
 ---
 
 ## 🖼️ Frontend (estático)
