@@ -129,6 +129,32 @@ Para ejecutarlo sin que aparezca la ventana negra de la terminal, usa `pythonw` 
    - En "Destino", cambia `python.exe` por `pythonw.exe`.
    - Mueve este acceso directo a la carpeta de Inicio (`Win + R` y escribe `shell:startup`).
 
+#### Linux/MacOS (Alternativa con PM2)
+Si prefieres usar un gestor de procesos moderno como PM2 (requiere Node.js):
+
+1. **Instalar PM2**:
+   ```bash
+   npm install -g pm2
+   ```
+
+2. **Iniciar el Agente**:
+   ```bash
+   pm2 start agent.py --name monitor-agent --interpreter python3
+   ```
+
+3. **Comandos Útiles**:
+   - Ver estado: `pm2 status`
+   - Ver logs: `pm2 logs monitor-agent`
+   - Reiniciar: `pm2 restart monitor-agent`
+   - Detener: `pm2 stop monitor-agent`
+
+4. **Persistencia (Inicio automático)**:
+   ```bash
+   pm2 save
+   pm2 startup
+   ```
+   *(Copia y pega el comando que te muestre la terminal para finalizar).*
+
 ---
 
 ## 🛠️ Solución de Problemas
