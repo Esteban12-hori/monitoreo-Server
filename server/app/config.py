@@ -23,5 +23,5 @@ CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "500"))
 # Nota: Para producción, use almacenamiento seguro y hash de contraseñas.
 ALLOWED_USERS = {
     "rlarenas@wingsoft.com": {"name": "Ramiro Larenas", "password": "q0<>E55NV"},
-    "jguajardo@wingsoft.com": {"name": "Joaquín Guajardo", "password": "FM5|47Gv"},
+    "jguajardo@wingsoft.com": {"name": "Joaquín Guajardo", "password": "Pombolita1"},
 }

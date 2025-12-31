@@ -56,20 +56,31 @@ def ensure_default_alerts(sess: Session):
         sess.commit()
 
 def ensure_default_users(sess: Session):
-    # Verificar si hay usuarios
-    existing_user = sess.execute(select(User)).first()
-    if not existing_user:
-        print("Migrando usuarios por defecto a la base de datos...")
-        for email, info in ALLOWED_USERS.items():
+    # Sincronizar usuarios permitidos desde config
+    print("Verificando usuarios por defecto...")
+    for email, info in ALLOWED_USERS.items():
+        user = sess.execute(select(User).where(User.email == email)).scalar_one_or_none()
+        if user:
+            # Opcional: Actualizar contraseña si se desea forzar desde config
+            # Para este caso, actualizaremos para asegurar que la solicitud del usuario se aplique
+            current_hash = user.password_hash
+            if not verify_password(info["password"], current_hash):
+                print(f"Actualizando contraseña para {email}")
+                user.password_hash = get_password_hash(info["password"])
+            
+            # Asegurar que sea admin
+            if not user.is_admin:
+                user.is_admin = True
+        else:
+            print(f"Creando usuario por defecto: {email}")
             user = User(
                 email=email,
                 name=info["name"],
                 password_hash=get_password_hash(info["password"]),
-                is_admin=True # Asumimos que los usuarios originales son admins
+                is_admin=True
             )
             sess.add(user)
-        sess.commit()
-        print("Usuarios migrados correctamente.")
+    sess.commit()
 
 @app.on_event("startup")
 def startup():
