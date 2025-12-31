@@ -1,0 +1,35 @@
+[Unit]
+Description=Monitoreo Server Backend
+After=network.target
+
+[Service]
+# Ajusta el usuario y grupo según corresponda (ej: azureuser)
+User=azureuser
+Group=azureuser
+
+# Directorio raíz del repositorio
+WorkingDirectory=/home/azureuser/monitoreo-Server
+
+# Variables de entorno
+Environment="PATH=/home/azureuser/monitoreo-Server/.venv/bin"
+Environment="DASHBOARD_TOKEN="
+Environment="CACHE_MAX_ITEMS=500"
+
+# Comando de inicio con Gunicorn
+ExecStart=/home/azureuser/monitoreo-Server/.venv/bin/gunicorn \
+    -k uvicorn.workers.UvicornWorker \
+    -w 4 \
+    -b 127.0.0.1:8001 \
+    --chdir server \
+    --access-logfile - \
+    app.main:app
+
+# Comando de recarga (Graceful Reload)
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Reiniciar automáticamente si falla
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

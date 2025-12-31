@@ -12,7 +12,7 @@ import unicodedata
 from passlib.context import CryptContext
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User
+from .models import Base, Server, Metric, AlertConfig, User, UserSession
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema
@@ -92,9 +92,6 @@ def startup():
 _cache: dict[str, list[dict]] = {}
 _cache_order: dict[str, int] = {}
 
-# Sesiones en memoria: token -> { user_id, email, name, is_admin }
-_sessions: dict[str, dict] = {}
-
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     try:
@@ -105,9 +102,31 @@ def _norm(s: str) -> str:
     return s
 
 def get_current_user_from_token(x_dashboard_token: Optional[str] = Header(None)):
-    if x_dashboard_token and x_dashboard_token in _sessions:
-        return _sessions[x_dashboard_token]
-    raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
+    if not x_dashboard_token:
+        raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
+    
+    with Session(engine) as sess:
+        session_record = sess.execute(
+            select(UserSession).where(UserSession.token == x_dashboard_token)
+        ).scalar_one_or_none()
+        
+        if not session_record:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        
+        # Cargar usuario relacionado
+        user = sess.get(User, session_record.user_id)
+        if not user:
+            # Sesión huérfana
+            sess.delete(session_record)
+            sess.commit()
+            raise HTTPException(status_code=401, detail="User not found")
+            
+        return {
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "is_admin": user.is_admin
+        }
 
 def require_admin(user: dict = Depends(get_current_user_from_token)):
     if not user.get("is_admin"):
@@ -138,12 +157,12 @@ def login(payload: LoginSchema):
             raise HTTPException(status_code=401, detail="Credenciales inválidas")
         
         token = uuid.uuid4().hex
-        _sessions[token] = {
-            "user_id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "is_admin": user.is_admin
-        }
+        
+        # Guardar sesión en DB
+        new_session = UserSession(token=token, user_id=user.id)
+        sess.add(new_session)
+        sess.commit()
+        
         return {
             "token": token, 
             "email": user.email, 
@@ -153,10 +172,14 @@ def login(payload: LoginSchema):
 
 @app.post("/api/logout")
 def logout(x_dashboard_token: Optional[str] = Header(None)):
-    if x_dashboard_token and x_dashboard_token in _sessions:
-        _sessions.pop(x_dashboard_token, None)
-        return {"status": "logged_out"}
-    raise HTTPException(status_code=401, detail="Unauthorized dashboard token")
+    if not x_dashboard_token:
+        raise HTTPException(status_code=401, detail="Missing token")
+        
+    with Session(engine) as sess:
+        sess.execute(delete(UserSession).where(UserSession.token == x_dashboard_token))
+        sess.commit()
+    
+    return {"status": "logged_out"}
 
 # --- Gestión de Usuarios (Admin) ---
 

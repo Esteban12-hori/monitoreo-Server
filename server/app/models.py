@@ -53,3 +53,12 @@ class User(Base):
     name = Column(String(255), nullable=True)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserSession(Base):
+    __tablename__ = "sessions"
+    token = Column(String(255), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")
