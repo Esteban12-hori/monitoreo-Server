@@ -3,7 +3,7 @@ import json
 import platform
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 

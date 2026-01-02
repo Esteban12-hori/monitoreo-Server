@@ -9,7 +9,7 @@ VENV_DIR="$REPO_ROOT/.venv"
 # Configuración
 HOST="127.0.0.1"
 PORT="8000"
-WORKERS=4
+WORKERS=1
 
 # Detectar venv
 if [ -d "$VENV_DIR" ]; then

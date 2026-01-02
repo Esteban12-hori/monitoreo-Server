@@ -79,7 +79,8 @@ app.add_middleware(
 )
 
 def ensure_default_alerts(sess: Session):
-    cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+    # Usamos scalars().first() para evitar error si hay múltiples (aunque no debería)
+    cfg = sess.execute(select(AlertConfig)).scalars().first()
     if not cfg:
         cfg = AlertConfig(
             cpu_total_percent=DEFAULT_ALERTS["cpu_total_percent"],
@@ -92,35 +93,48 @@ def ensure_default_alerts(sess: Session):
 def ensure_default_users(sess: Session):
     # Sincronizar usuarios permitidos desde config
     print("Verificando usuarios por defecto...")
-    for email, info in ALLOWED_USERS.items():
-        user = sess.execute(select(User).where(User.email == email)).scalar_one_or_none()
-        if user:
-            # Opcional: Actualizar contraseña si se desea forzar desde config
-            # Para este caso, actualizaremos para asegurar que la solicitud del usuario se aplique
-            current_hash = user.password_hash
-            if not verify_password(info["password"], current_hash):
-                print(f"Actualizando contraseña para {email}")
-                user.password_hash = get_password_hash(info["password"])
-            
-            # Asegurar que sea admin
-            if not user.is_admin:
-                user.is_admin = True
-        else:
-            print(f"Creando usuario por defecto: {email}")
-            user = User(
-                email=email,
-                name=info["name"],
-                password_hash=get_password_hash(info["password"]),
-                is_admin=True
-            )
-            sess.add(user)
-    sess.commit()
+    try:
+        for email, info in ALLOWED_USERS.items():
+            # Usamos scalars().first() para ser más robustos
+            user = sess.execute(select(User).where(User.email == email)).scalars().first()
+            if user:
+                # Opcional: Actualizar contraseña si se desea forzar desde config
+                current_hash = user.password_hash
+                if not verify_password(info["password"], current_hash):
+                    print(f"Actualizando contraseña para {email}")
+                    user.password_hash = get_password_hash(info["password"])
+                
+                if not user.is_admin:
+                    user.is_admin = True
+                
+                # Importante: flush aquí para evitar conflictos si se agrega más lógica
+                sess.flush()
+            else:
+                print(f"Creando usuario por defecto: {email}")
+                user = User(
+                    email=email,
+                    name=info["name"],
+                    password_hash=get_password_hash(info["password"]),
+                    is_admin=True
+                )
+                sess.add(user)
+                # Flush inmediato para atrapar errores de integridad antes del commit final
+                sess.flush()
+        sess.commit()
+    except Exception as e:
+        print(f"Advertencia al crear usuarios por defecto (posible concurrencia): {e}")
+        sess.rollback()
 
 @app.on_event("startup")
 def startup():
-    with Session(engine) as sess:
-        ensure_default_alerts(sess)
-        ensure_default_users(sess)
+    # Usar un lock o simplemente un try-except robusto
+    try:
+        with Session(engine) as sess:
+            ensure_default_alerts(sess)
+            # Deshabilitado temporalmente para evitar conflictos de concurrencia en reinicios rápidos
+            # ensure_default_users(sess)
+    except Exception as e:
+        print(f"Advertencia en startup: {e}")
 
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
