@@ -2,14 +2,21 @@ import json
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
-
-from fastapi import FastAPI, HTTPException, Header, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, select, delete
-from sqlalchemy.orm import Session
+import os
 import uuid
 import unicodedata
+
+from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from sqlalchemy import create_engine, select, delete
+from sqlalchemy.orm import Session
 from passlib.context import CryptContext
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
 from .models import Base, Server, Metric, AlertConfig, User, UserSession
@@ -36,6 +43,33 @@ engine = get_engine()
 Base.metadata.create_all(engine)
 
 app = FastAPI(title="Monitor Integral")
+
+# --- Rate Limiting Setup ---
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# --- Security Middlewares ---
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["localhost", "127.0.0.1", "::1", "*"]
+)
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:;"
+    )
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -134,7 +168,8 @@ def require_admin(user: dict = Depends(get_current_user_from_token)):
     return user
 
 @app.post("/api/login")
-def login(payload: LoginSchema):
+@limiter.limit("5/minute")
+def login(request: Request, payload: LoginSchema):
     identifier = _norm(payload.email or "")
     password = (payload.password or "").strip()
     
@@ -374,3 +409,10 @@ def health():
         return {"ok": True}
     except Exception:
         return {"ok": False}
+
+# --- Servir Frontend (debe ir al final) ---
+frontend_path = Path(__file__).resolve().parent.parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+else:
+    print(f"Advertencia: No se encontró el frontend en {frontend_path}")

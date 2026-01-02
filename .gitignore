@@ -10,5 +10,7 @@ venv/
 agent/python/logs/
 agent/python/agent.config.json
 server/monitor.db
+server/data/
+*.db
 .DS_Store
 .vscode/
