@@ -3,28 +3,32 @@ Description=Monitoreo Server Backend
 After=network.target
 
 [Service]
-# Ajusta el usuario y grupo según corresponda (ej: azureuser)
-User=azureuser
-Group=azureuser
+# Ajusta el usuario y grupo según corresponda (ej: ubuntu, azureuser, root)
+User=ubuntu
+Group=ubuntu
 
-# Directorio raíz del repositorio
-WorkingDirectory=/home/azureuser/monitoreo-Server
+# Directorio raíz del repositorio (AJUSTAR RUTA)
+WorkingDirectory=/home/ubuntu/monitoreo-Server-main
 
 # Variables de entorno
-Environment="PATH=/home/azureuser/monitoreo-Server/.venv/bin"
+Environment="PATH=/home/ubuntu/monitoreo-Server-main/.venv/bin"
 Environment="DASHBOARD_TOKEN="
 Environment="CACHE_MAX_ITEMS=500"
 
-# Comando de inicio con Gunicorn
-ExecStart=/home/azureuser/monitoreo-Server/.venv/bin/gunicorn \
+# Comando de inicio con Gunicorn (Zero Downtime)
+# -k uvicorn.workers.UvicornWorker: Usa Uvicorn como worker
+# -w 4: Número de workers (ajustar según CPU: 2 * núcleos + 1)
+# -b 127.0.0.1:8000: Bind a localhost (usar Nginx como proxy reverso)
+ExecStart=/home/ubuntu/monitoreo-Server-main/.venv/bin/gunicorn \
     -k uvicorn.workers.UvicornWorker \
     -w 4 \
-    -b 127.0.0.1:8001 \
+    -b 127.0.0.1:8000 \
     --chdir server \
     --access-logfile - \
     app.main:app
 
 # Comando de recarga (Graceful Reload)
+# Esto permite actualizar el código sin tirar conexiones activas
 ExecReload=/bin/kill -s HUP $MAINPID
 
 # Reiniciar automáticamente si falla

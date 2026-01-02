@@ -150,6 +150,31 @@ Para que el agente se ejecute automáticamente al iniciar el sistema y funcione 
 
 ---
 
+### 🔄 Actualización sin Caídas (Zero-Downtime Deployment)
+
+Si estás ejecutando el servidor en producción con **Linux y Systemd** (usando la configuración recomendada con Gunicorn), puedes actualizar el código sin detener el servicio ni desconectar a los usuarios activos.
+
+1.  **Descargar los cambios:**
+    ```bash
+    cd /ruta/a/monitoreo-Server-main
+    git pull origin main
+    ```
+
+2.  **Actualizar dependencias (si es necesario):**
+    ```bash
+    source .venv/bin/activate
+    pip install -r server/requirements.txt
+    ```
+
+3.  **Recargar el servicio suavemente:**
+    ```bash
+    sudo systemctl reload monitoreo-backend
+    ```
+
+*Este comando envía una señal `HUP` a Gunicorn, que iniciará nuevos trabajadores con el código actualizado y detendrá los antiguos solo cuando terminen sus tareas pendientes.*
+
+---
+
 ## 🔐 Detalles de Seguridad
 
 El sistema implementa varias capas de seguridad para proteger el panel de control y la API:
