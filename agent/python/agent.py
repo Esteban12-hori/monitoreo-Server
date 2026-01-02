@@ -61,7 +61,7 @@ def payload(server_id: str):
         "cpu": read_cpu(),
         "disk": read_disk(),
         "docker": read_docker(),
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 

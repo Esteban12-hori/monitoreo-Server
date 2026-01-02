@@ -82,12 +82,26 @@ Deberías ver un mensaje indicando que el agente ha iniciado. El script se mante
 
 Para que el agente se inicie automáticamente con el sistema y corra en segundo plano (sin dejar la terminal abierta):
 
-#### Linux (Systemd)
-La forma profesional es crear un servicio de sistema.
+#### Linux (Automático)
+
+Hemos incluido un script que hace todo el trabajo por ti:
+
+1. Asegúrate de estar en la carpeta `agent/python`:
+   ```bash
+   cd agent/python
+   ```
+2. Ejecuta el script de instalación del servicio:
+   ```bash
+   bash setup_service.sh
+   ```
+   Este script verificará la configuración (o te pedirá crearla) y configurará systemd automáticamente.
+
+#### Linux (Manual - Systemd)
+Si prefieres hacerlo manualmente:
 
 1. Crea el archivo de servicio:
    ```bash
-   sudo nano /etc/systemd/system/monitor-agent.service
+   sudo nano /etc/systemd/system/monitoreo-agent.service
    ```
 
 2. Pega el siguiente contenido (ajusta las rutas según donde descargaste el agente):
