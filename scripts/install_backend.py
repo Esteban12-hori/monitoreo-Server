@@ -53,7 +53,7 @@ def main():
 
     print_step("Configuración básica")
     host = input("Host de escucha [127.0.0.1]: ").strip() or "127.0.0.1"
-    port = input("Puerto [8001]: ").strip() or "8001"
+    port = input("Puerto [8000]: ").strip() or "8000"
     dashboard_token = input("DASHBOARD_TOKEN (opcional) []: ").strip()
     cache_max = input("CACHE_MAX_ITEMS [500]: ").strip() or "500"
     use_tls = (input("¿TLS directo en Uvicorn? (y/N): ").strip().lower() == "y")
