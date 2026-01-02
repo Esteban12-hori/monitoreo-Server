@@ -8,7 +8,7 @@ VENV_DIR="$REPO_ROOT/.venv"
 
 # Configuración
 HOST="127.0.0.1"
-PORT="8001"
+PORT="8000"
 WORKERS=4
 
 # Detectar venv
