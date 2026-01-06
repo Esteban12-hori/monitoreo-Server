@@ -430,6 +430,31 @@ function App() {
     setCurrentView('dashboard');
   };
 
+  const handleDeleteServer = async (serverId, e) => {
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar servidor ${serverId}?`)) return;
+    try {
+        await fetchJSON(`/api/admin/servers/${serverId}`, { method: 'DELETE' });
+        load(); // Reload servers
+        if (selected === serverId) setSelected('');
+    } catch (e) {
+        alert('Error eliminando servidor: ' + e.message);
+    }
+  };
+
+  const handleUpdateInterval = async (serverId, val) => {
+    try {
+        await fetchJSON(`/api/admin/servers/${serverId}/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_interval: parseInt(val) })
+        });
+        load(); // Reload to update state
+    } catch (e) {
+        alert('Error actualizando intervalo: ' + e.message);
+    }
+  };
+
   const AlertInput = (key, label) => (
     React.createElement('div', { className: 'card' },
       React.createElement('div', null, label),
