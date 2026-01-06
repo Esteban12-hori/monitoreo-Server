@@ -16,6 +16,32 @@ Este proyecto es una solución completa para el monitoreo de servidores en tiemp
 
 ---
 
+## 📂 Estructura del Proyecto
+
+```
+monitoreo-Server-main/
+├── agent/                  # Código del agente de monitoreo (se instala en los nodos)
+│   └── python/             # Scripts Python del agente
+├── deploy/                 # Archivos de configuración para despliegue
+│   ├── nginx/              # Configuración de Nginx
+│   └── systemd/            # Servicios Systemd (Linux)
+├── frontend/               # Interfaz Web (Dashboard)
+│   ├── assets/             # JS y CSS
+│   └── index.html          # Entry point
+├── scripts/                # Scripts de instalación y utilidades (Windows/Linux)
+├── server/                 # Backend (API REST FastAPI)
+│   ├── app/                # Código fuente de la aplicación
+│   │   ├── config.py       # Configuración y credenciales
+│   │   ├── email_utils.py  # Módulo de alertas por correo
+│   │   ├── main.py         # Punto de entrada de la API
+│   │   ├── models.py       # Modelos de base de datos
+│   │   └── schemas.py      # Esquemas Pydantic
+│   └── scripts/            # Scripts de gestión del servidor
+└── setup_linux.sh          # Script maestro de instalación
+```
+
+---
+
 ## 📋 Requisitos del Sistema
 
 ### Para el Servidor Central (Backend + Web)
