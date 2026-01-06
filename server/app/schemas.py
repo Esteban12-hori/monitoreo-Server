@@ -61,16 +61,21 @@ class UserCreateSchema(BaseModel):
     password: str = Field(..., min_length=6)
     name: Optional[str] = None
     is_admin: bool = False
+    receive_alerts: bool = False
 
 class UserResponseSchema(BaseModel):
     id: int
     email: str
     name: Optional[str]
     is_admin: bool
+    receive_alerts: bool
     created_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+class ServerAssignmentSchema(BaseModel):
+    server_ids: List[str] # Lista de server_id (string unique ID)
 
 class ChangePasswordSchema(BaseModel):
     current_password: str
@@ -92,4 +97,25 @@ class AlertRecipientSchema(BaseModel):
 class AlertRecipientCreateSchema(BaseModel):
     email: EmailStr
     name: Optional[str] = None
+
+
+class AlertRuleBase(BaseModel):
+    alert_type: str = Field(..., pattern="^(cpu|memory|disk|offline)$")
+    server_scope: str = Field(..., pattern="^(global|server|group)$")
+    target_id: Optional[str] = None
+    emails: List[EmailStr]
+
+class AlertRuleCreate(AlertRuleBase):
+    pass
+
+class AlertRuleResponse(AlertRuleBase):
+    id: int
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class ServerUpdateGroupSchema(BaseModel):
+    group_name: Optional[str]
+
 

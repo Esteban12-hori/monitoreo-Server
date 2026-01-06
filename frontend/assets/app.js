@@ -97,13 +97,241 @@ function LineChart({ labels, data, label, color='#22d3ee' }) {
   return React.createElement('canvas', { height: 120, ref });
 }
 
+function ServerAssignmentModal({ user, onClose }) {
+    const [allServers, setAllServers] = useState([]);
+    const [assigned, setAssigned] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const load = async () => {
+            try {
+                const [serversData, assignedData] = await Promise.all([
+                    fetchJSON('/api/servers'), // Asume que admin ve todos
+                    fetchJSON(`/api/admin/users/${user.id}/servers`)
+                ]);
+                setAllServers(serversData);
+                setAssigned(assignedData); // Array of strings (server_ids)
+            } catch (e) {
+                alert('Error cargando servidores: ' + e.message);
+                onClose();
+            } finally {
+                setLoading(false);
+            }
+        };
+        load();
+    }, [user.id]);
+
+    const toggleServer = (sid) => {
+        if (assigned.includes(sid)) {
+            setAssigned(assigned.filter(s => s !== sid));
+        } else {
+            setAssigned([...assigned, sid]);
+        }
+    };
+
+    const handleSave = async () => {
+        try {
+            await fetchJSON(`/api/admin/users/${user.id}/servers`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_ids: assigned })
+            });
+            alert('Asignación guardada');
+            onClose();
+        } catch (e) {
+            alert('Error guardando: ' + e.message);
+        }
+    };
+
+    return React.createElement('div', { 
+        style: { 
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 
+        } 
+    },
+        React.createElement('div', { className: 'card', style: { width: 500, maxHeight: '80vh', overflowY: 'auto' } },
+            React.createElement('div', { className: 'title' }, `Asignar Servidores a ${user.name || user.email}`),
+            loading ? 'Cargando...' : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, margin: '20px 0' } },
+                allServers.length === 0 ? 'No hay servidores registrados' :
+                allServers.map(s => 
+                    React.createElement('label', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 5, border: '1px solid #333', borderRadius: 4, cursor: 'pointer', background: assigned.includes(s.server_id) ? '#1e293b' : 'transparent' } },
+                        React.createElement('input', { 
+                            type: 'checkbox', 
+                            checked: assigned.includes(s.server_id), 
+                            onChange: () => toggleServer(s.server_id) 
+                        }),
+                        React.createElement('span', null, s.server_id)
+                    )
+                )
+            ),
+            React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end' } },
+                React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
+                React.createElement('button', { onClick: handleSave }, 'Guardar')
+            )
+        )
+    );
+}
+
+function ServerGroupRow({ server, onUpdate }) {
+    const [group, setGroup] = useState(server.group_name || '');
+    const hasChanged = group !== (server.group_name || '');
+
+    return React.createElement('tr', { style: { borderBottom: '1px solid #222' } },
+        React.createElement('td', { style: { padding: 8 } }, server.server_id),
+        React.createElement('td', { style: { padding: 8 } },
+            React.createElement('input', { 
+                value: group, 
+                onChange: e => setGroup(e.target.value),
+                placeholder: 'Sin grupo',
+                style: { background: '#111', border: '1px solid #444', color: '#fff', padding: 4 }
+            })
+        ),
+        React.createElement('td', { style: { padding: 8 } },
+            hasChanged && React.createElement('button', { 
+                onClick: () => onUpdate(server.server_id, group),
+                style: { fontSize: '0.8rem', padding: '4px 8px' } 
+            }, 'Guardar')
+        )
+    );
+}
+
+function ServerGroupManager() {
+    const [servers, setServers] = useState([]);
+    const [loading, setLoading] = useState(false);
+
+    const load = async () => {
+        setLoading(true);
+        try {
+            const data = await fetchJSON('/api/servers');
+            setServers(data);
+        } catch (e) { console.error(e); }
+        finally { setLoading(false); }
+    };
+
+    useEffect(() => { load(); }, []);
+
+    const updateGroup = async (sid, groupName) => {
+        try {
+            await fetchJSON(`/api/admin/servers/${sid}/group`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ group_name: groupName || null })
+            });
+            load();
+        } catch(e) { alert(e.message); }
+    };
+
+    return React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
+        React.createElement('div', { className: 'title' }, 'Gestión de Grupos de Servidores'),
+        loading ? 'Cargando...' : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+            React.createElement('thead', null,
+                React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+                    React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Acción')
+                )
+            ),
+            React.createElement('tbody', null,
+                servers.map(s => React.createElement(ServerGroupRow, { key: s.server_id, server: s, onUpdate: updateGroup }))
+            )
+        )
+    );
+}
+
+function AlertRulesManager() {
+    const [rules, setRules] = useState([]);
+    const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', emails: '' });
+    
+    const load = async () => {
+        const data = await fetchJSON('/api/admin/alert-rules');
+        setRules(data);
+    };
+    
+    useEffect(() => { load(); }, []);
+
+    const handleCreate = async () => {
+        try {
+            const payload = {
+                ...newRule,
+                emails: newRule.emails.split(',').map(e => e.trim()).filter(e => e)
+            };
+            if (payload.emails.length === 0) { alert('Añade al menos un email'); return; }
+            if (newRule.server_scope !== 'global' && !newRule.target_id) { alert('Especifica ID de servidor o Grupo'); return; }
+
+            await fetchJSON('/api/admin/alert-rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', emails: '' });
+            load();
+        } catch(e) { alert(e.message); }
+    };
+
+    const handleDelete = async (id) => {
+        if(!confirm('Borrar regla?')) return;
+        await fetchJSON(`/api/admin/alert-rules/${id}`, { method: 'DELETE' });
+        load();
+    };
+
+    return React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
+        React.createElement('div', { className: 'title' }, 'Reglas de Alerta Avanzadas'),
+        
+        React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginBottom: 20, padding: 10, background: '#1e293b', borderRadius: 6 } },
+            React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}), style: { padding: 8, background: '#333', color: '#fff', border: 'none' } },
+                ['cpu', 'memory', 'disk'].map(t => React.createElement('option', { key: t, value: t }, t.toUpperCase()))
+            ),
+            React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}), style: { padding: 8, background: '#333', color: '#fff', border: 'none' } },
+                React.createElement('option', { value: 'global' }, 'Global'),
+                React.createElement('option', { value: 'server' }, 'Servidor Específico'),
+                React.createElement('option', { value: 'group' }, 'Grupo de Servidores')
+            ),
+            newRule.server_scope !== 'global' && React.createElement('input', { 
+                placeholder: newRule.server_scope === 'server' ? 'ID Servidor' : 'Nombre Grupo',
+                value: newRule.target_id,
+                onChange: e => setNewRule({...newRule, target_id: e.target.value})
+            }),
+            React.createElement('input', { 
+                placeholder: 'Emails (separados por coma)',
+                value: newRule.emails,
+                onChange: e => setNewRule({...newRule, emails: e.target.value})
+            }),
+            React.createElement('button', { onClick: handleCreate }, 'Crear Regla')
+        ),
+
+        React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+            React.createElement('thead', null,
+                React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+                    React.createElement('th', { style: { padding: 8 } }, 'Tipo'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Alcance'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Objetivo'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Destinatarios'),
+                    React.createElement('th', { style: { padding: 8 } }, 'Acción')
+                )
+            ),
+            React.createElement('tbody', null,
+                rules.map(r => React.createElement('tr', { key: r.id, style: { borderBottom: '1px solid #222' } },
+                    React.createElement('td', { style: { padding: 8 } }, r.alert_type.toUpperCase()),
+                    React.createElement('td', { style: { padding: 8 } }, r.server_scope),
+                    React.createElement('td', { style: { padding: 8 } }, r.target_id || '-'),
+                    React.createElement('td', { style: { padding: 8 } }, r.emails.join(', ')),
+                    React.createElement('td', { style: { padding: 8 } },
+                        React.createElement('button', { onClick: () => handleDelete(r.id), style: { background: '#ef4444', fontSize: '0.8rem', padding: '2px 6px' } }, 'X')
+                    )
+                ))
+            )
+        )
+    );
+}
+
 function AdminPanel() {
     const [users, setUsers] = useState([]);
     const [recipients, setRecipients] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false });
+    const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false });
     const [newRecipient, setNewRecipient] = useState({ email: '', name: '' });
+    const [assigningUser, setAssigningUser] = useState(null); // Usuario seleccionado para modal
 
     const loadUsers = async () => {
         setLoading(true);
@@ -193,6 +421,10 @@ function AdminPanel() {
         ),
         error && React.createElement('div', { style: { color: 'red', marginBottom: 10 } }, error),
         
+        // Componentes nuevos
+        React.createElement(ServerGroupManager),
+        React.createElement(AlertRulesManager),
+
         React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
             React.createElement('div', { className: 'title' }, 'Crear Nuevo Usuario'),
             React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
@@ -220,6 +452,14 @@ function AdminPanel() {
                     }),
                     'Es Admin'
                 ),
+                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                    React.createElement('input', { 
+                        type: 'checkbox', 
+                        checked: newUser.receive_alerts, 
+                        onChange: e => setNewUser({...newUser, receive_alerts: e.target.checked}) 
+                    }),
+                    'Recibir Alertas'
+                ),
                 React.createElement('button', { onClick: handleCreate }, 'Crear Usuario')
             )
         ),
@@ -233,6 +473,7 @@ function AdminPanel() {
                         React.createElement('th', { style: { padding: 8 } }, 'Email'),
                         React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
                         React.createElement('th', { style: { padding: 8 } }, 'Rol'),
+                        React.createElement('th', { style: { padding: 8 } }, 'Alertas'),
                         React.createElement('th', { style: { padding: 8 } }, 'Acciones')
                     )
                 ),
@@ -243,7 +484,12 @@ function AdminPanel() {
                             React.createElement('td', { style: { padding: 8 } }, u.email),
                             React.createElement('td', { style: { padding: 8 } }, u.name || '-'),
                             React.createElement('td', { style: { padding: 8 } }, u.is_admin ? 'Admin' : 'User'),
-                            React.createElement('td', { style: { padding: 8 } },
+                            React.createElement('td', { style: { padding: 8 } }, u.receive_alerts ? 'Sí' : 'No'),
+                            React.createElement('td', { style: { padding: 8, display: 'flex', gap: 5 } },
+                                React.createElement('button', { 
+                                    style: { backgroundColor: '#3b82f6', fontSize: '0.8rem', padding: '4px 8px' },
+                                    onClick: () => setAssigningUser(u)
+                                }, 'Servidores'),
                                 React.createElement('button', { 
                                     style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
                                     onClick: () => handleDelete(u.id)

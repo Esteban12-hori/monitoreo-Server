@@ -19,11 +19,12 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
-    ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema
+    ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
+    ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema
 )
 from .email_utils import send_alert_email
 import time
@@ -276,6 +277,29 @@ def delete_user(user_id: int, user: dict = Depends(require_admin)):
         sess.commit()
         return {"status": "deleted"}
 
+@app.post("/api/admin/users/{user_id}/servers")
+def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        target_user = sess.get(User, user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
+        
+        # Buscar los servidores por server_id (string)
+        servers = sess.execute(select(Server).where(Server.server_id.in_(payload.server_ids))).scalars().all()
+        
+        target_user.servers = servers
+        sess.commit()
+        return {"status": "assigned", "count": len(servers)}
+
+@app.get("/api/admin/users/{user_id}/servers")
+def get_user_servers(user_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        target_user = sess.get(User, user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
+        
+        return [s.server_id for s in target_user.servers]
+
 # --- Servidores y Métricas ---
 
 @app.post("/api/register")
@@ -296,7 +320,7 @@ def register_server(payload: RegisterServerSchema):
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         servers = sess.execute(select(Server)).scalars().all()
-        return [{"server_id": s.server_id, "created_at": str(s.created_at)} for s in servers]
+        return [{"server_id": s.server_id, "created_at": str(s.created_at), "group_name": s.group_name} for s in servers]
 
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):
@@ -358,6 +382,71 @@ def delete_alert_recipient(recipient_id: int, user: dict = Depends(require_admin
         return {"status": "deleted"}
 
 
+# --- Reglas de Alerta y Grupos ---
+
+@app.get("/api/admin/alert-rules", response_model=List[AlertRuleResponse])
+def list_alert_rules(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        rules = sess.execute(select(AlertRule)).scalars().all()
+        res = []
+        for r in rules:
+            try:
+                emails_list = json.loads(r.emails) if r.emails else []
+            except:
+                emails_list = []
+            res.append(AlertRuleResponse(
+                id=r.id,
+                alert_type=r.alert_type,
+                server_scope=r.server_scope,
+                target_id=r.target_id,
+                emails=emails_list,
+                created_at=r.created_at
+            ))
+        return res
+
+@app.post("/api/admin/alert-rules", response_model=AlertRuleResponse)
+def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        new_rule = AlertRule(
+            alert_type=payload.alert_type,
+            server_scope=payload.server_scope,
+            target_id=payload.target_id,
+            emails=json.dumps(payload.emails)
+        )
+        sess.add(new_rule)
+        sess.commit()
+        sess.refresh(new_rule)
+        
+        return AlertRuleResponse(
+            id=new_rule.id,
+            alert_type=new_rule.alert_type,
+            server_scope=new_rule.server_scope,
+            target_id=new_rule.target_id,
+            emails=payload.emails,
+            created_at=new_rule.created_at
+        )
+
+@app.delete("/api/admin/alert-rules/{rule_id}")
+def delete_alert_rule(rule_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        r = sess.get(AlertRule, rule_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Regla no encontrada")
+        sess.delete(r)
+        sess.commit()
+        return {"status": "deleted"}
+
+@app.put("/api/admin/servers/{server_id}/group")
+def update_server_group(server_id: str, payload: ServerUpdateGroupSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado")
+        srv.group_name = payload.group_name
+        sess.commit()
+        return {"status": "updated", "group_name": srv.group_name}
+
+
 @app.post("/api/metrics")
 def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = Header(None)):
     if not x_auth_token:
@@ -402,10 +491,6 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
             
             if alert_cfg:
-                # Obtener destinatarios extra
-                extra_recipients_objs = sess.execute(select(AlertRecipient)).scalars().all()
-                extra_recipients = [{"email": r.email, "name": r.name} for r in extra_recipients_objs]
-                
                 # Datos completos para el correo
                 full_metrics = payload.model_dump()
 
@@ -416,7 +501,9 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "cpu")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent, extra_recipients, full_metrics)
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
+                        print(f"[ALERT] Sending CPU alert for {srv.server_id}. Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent, recipients, full_metrics)
                         _alert_state[key] = current_time
                         
                 # Check Memory
@@ -425,7 +512,9 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "memory")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent, extra_recipients, full_metrics)
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
+                        print(f"[ALERT] Sending Memory alert for {srv.server_id}. Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent, recipients, full_metrics)
                         _alert_state[key] = current_time
 
                 # Check Disk
@@ -433,7 +522,9 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "disk")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent, extra_recipients, full_metrics)
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
+                        print(f"[ALERT] Sending Disk alert for {srv.server_id}. Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent, recipients, full_metrics)
                         _alert_state[key] = current_time
 
         except Exception as e:

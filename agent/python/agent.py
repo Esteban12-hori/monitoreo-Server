@@ -121,7 +121,7 @@ def main():
     parser.add_argument("--server-id", required=False, help="Identificador del servidor")
     parser.add_argument("--token", help="Token de autenticación", default="")
     parser.add_argument("--interval", help="Intervalo de envío (segundos)", type=int, default=2400)
-    parser.add_argument("--verify", default="", help="Ruta a CA/cert para verificación TLS (opcional)")
+    parser.add_argument("--verify", default=None, help="Ruta a CA/cert para verificación TLS (o 'false' para desactivar)")
     parser.add_argument("--config", default=str(Path(__file__).resolve().parent / "agent.config.json"), help="Ruta a archivo de configuración")
     args = parser.parse_args()
 
@@ -134,21 +134,37 @@ def main():
     interval = args.interval
     verify = args.verify
 
+    cfg = {}
     if not (server and server_id and token):
         cfg = load_config(Path(args.config))
-        server = server or cfg.get("server", "")
-        server_id = server_id or cfg.get("server_id", "")
-        token = token or cfg.get("token", "")
-        
-        # Intentar desofuscar token
-        try:
-            from security import reveal_token
-            token = reveal_token(token)
-        except ImportError:
-            pass
 
-        interval = cfg.get("interval", interval)
-        verify = cfg.get("verify", verify)
+    # Prioridad: Argumento > Config > Default
+    server = server or cfg.get("server", "")
+    server_id = server_id or cfg.get("server_id", "")
+    token = token or cfg.get("token", "")
+    
+    # Intentar desofuscar token
+    try:
+        from security import reveal_token
+        token = reveal_token(token)
+    except ImportError:
+        pass
+
+    # Manejo de intervalo
+    if args.interval == 2400 and "interval" in cfg:
+        interval = cfg.get("interval")
+
+    # Manejo de verify (SSL)
+    # Lógica: Si es None (no pasado por arg), mirar config. Si no está en config, True.
+    if verify is None:
+        verify = cfg.get("verify", True)
+    
+    # Convertir string "false" a booleano False si viene de argumentos o json texto
+    if isinstance(verify, str):
+        if verify.lower() == "false":
+            verify = False
+        elif verify == "":
+            verify = True
 
     if not (server and server_id and token):
         print("Faltan parámetros obligatorios. Usa --config o pasa --server, --server-id y --token.")

@@ -1,8 +1,14 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Table
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 
 Base = declarative_base()
+
+# Tabla de asociación para User <-> Server
+user_server_link = Table('user_server_link', Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
+    Column('server_id', Integer, ForeignKey('servers.id'), primary_key=True)
+)
 
 
 class Server(Base):
@@ -11,6 +17,17 @@ class Server(Base):
     server_id = Column(String(255), unique=True, index=True, nullable=False)
     token = Column(String(255), nullable=False)
     report_interval = Column(Integer, default=2400) # Segundos
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    group_name = Column(String(255), nullable=True, index=True) # Nuevo campo
+
+
+class AlertRule(Base):
+    __tablename__ = "alert_rules"
+    id = Column(Integer, primary_key=True)
+    alert_type = Column(String(50), nullable=False) # 'cpu', 'memory', 'disk', 'offline'
+    server_scope = Column(String(20), nullable=False) # 'global', 'server', 'group'
+    target_id = Column(String(255), nullable=True) # server_id o group_name
+    emails = Column(Text, nullable=False) # Lista de emails en JSON (e.g. ["a@b.com", "c@d.com"])
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -62,7 +79,11 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     name = Column(String(255), nullable=True)
     is_admin = Column(Boolean, default=False)
+    receive_alerts = Column(Boolean, default=False) # Nuevo campo
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relación Many-to-Many con Server
+    servers = relationship("Server", secondary=user_server_link, backref="assigned_users")
 
 
 class UserSession(Base):

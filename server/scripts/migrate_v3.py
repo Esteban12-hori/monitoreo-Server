@@ -11,36 +11,35 @@ from app.config import DB_PATH
 from app.models import Base
 
 def migrate():
-    print(f"🔧 Starting Database Migration...")
+    print(f"🔧 Starting Database Migration V3...")
     print(f"📂 Database Path: {DB_PATH}")
     
     db_url = f"sqlite:///{DB_PATH}"
     engine = create_engine(db_url, future=True)
     
-    # 1. Create any missing tables (safe to run, skips existing)
-    print("1️⃣  Checking/Creating missing tables...")
+    # 1. Create alert_rules table
+    print("1️⃣  Checking/Creating missing tables (alert_rules)...")
     try:
         Base.metadata.create_all(engine)
         print("   ✅ Tables verified.")
     except Exception as e:
         print(f"   ❌ Error creating tables: {e}")
 
-    # 2. Apply specific column migrations
+    # 2. Add group_name to servers
     print("2️⃣  Checking/Applying column migrations...")
     with engine.connect() as conn:
-        # Migration: Add report_interval to servers
         try:
-            conn.execute(text("ALTER TABLE servers ADD COLUMN report_interval INTEGER DEFAULT 2400"))
+            conn.execute(text("ALTER TABLE servers ADD COLUMN group_name VARCHAR(255)"))
             conn.commit()
-            print("   ✅ Added 'report_interval' to 'servers' table.")
+            print("   ✅ Added 'group_name' to 'servers' table.")
         except Exception as e:
             err = str(e).lower()
             if "duplicate column name" in err:
-                print("   ℹ️  Column 'report_interval' already exists in 'servers'.")
+                print("   ℹ️  Column 'group_name' already exists in 'servers'.")
             else:
-                print(f"   ⚠️  Could not add 'report_interval': {e}")
+                print(f"   ⚠️  Could not add 'group_name': {e}")
 
-    print("\n✅ Migration completed.")
+    print("\n✅ Migration V3 completed.")
 
 if __name__ == "__main__":
     migrate()
