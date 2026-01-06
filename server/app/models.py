@@ -10,6 +10,7 @@ class Server(Base):
     id = Column(Integer, primary_key=True)
     server_id = Column(String(255), unique=True, index=True, nullable=False)
     token = Column(String(255), nullable=False)
+    report_interval = Column(Integer, default=2400) # Segundos
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -43,6 +44,15 @@ class AlertConfig(Base):
     memory_used_percent = Column(Float)
     disk_used_percent = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AlertRecipient(Base):
+    __tablename__ = "alert_recipients"
+    id = Column(Integer, primary_key=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 
 
 class User(Base):

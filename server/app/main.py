@@ -326,6 +326,38 @@ def update_server_config(server_id: str, payload: ServerConfigUpdateSchema, user
         return {"status": "updated", "server_id": server_id, "report_interval": srv.report_interval}
 
 
+# --- Destinatarios de Alertas (Alert Recipients) ---
+
+@app.get("/api/admin/recipients", response_model=List[AlertRecipientSchema])
+def list_alert_recipients(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        recipients = sess.execute(select(AlertRecipient)).scalars().all()
+        return recipients
+
+@app.post("/api/admin/recipients", response_model=AlertRecipientSchema)
+def create_alert_recipient(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        existing = sess.execute(select(AlertRecipient).where(AlertRecipient.email == payload.email)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="El email ya está registrado")
+        
+        new_recipient = AlertRecipient(email=payload.email, name=payload.name)
+        sess.add(new_recipient)
+        sess.commit()
+        sess.refresh(new_recipient)
+        return new_recipient
+
+@app.delete("/api/admin/recipients/{recipient_id}")
+def delete_alert_recipient(recipient_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        r = sess.get(AlertRecipient, recipient_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Destinatario no encontrado")
+        sess.delete(r)
+        sess.commit()
+        return {"status": "deleted"}
+
+
 @app.post("/api/metrics")
 def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = Header(None)):
     if not x_auth_token:

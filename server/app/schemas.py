@@ -78,3 +78,18 @@ class ChangePasswordSchema(BaseModel):
 
 class ServerConfigUpdateSchema(BaseModel):
     report_interval: int = Field(..., ge=5, le=86400) # 5s to 24h
+
+
+class AlertRecipientSchema(BaseModel):
+    id: int
+    email: str
+    name: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class AlertRecipientCreateSchema(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+
