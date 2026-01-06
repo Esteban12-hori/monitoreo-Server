@@ -4,4 +4,4 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-python3 "$REPO_ROOT/scripts/install_frontend.py"
+python3 "$REPO_ROOT/scripts/00_install_backend.py"

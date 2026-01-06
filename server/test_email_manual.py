@@ -7,7 +7,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 
 # Add the parent directory to sys.path to allow importing from app
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent))
 
 from app.email_utils import send_alert_email
 from app.config import EMAIL_API_KEY, EMAIL_SENDER_EMAIL

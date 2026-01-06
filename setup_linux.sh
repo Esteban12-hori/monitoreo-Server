@@ -29,7 +29,7 @@ fi
 echo "[+] Iniciando instalación del Backend..."
 # Usamos 'source' o ejecutamos directamente. Mejor ejecutar.
 # Pasamos argumentos si los hubiera, o dejamos interactivo.
-./scripts/install_backend.sh
+./scripts/00_install_backend.sh
 
 echo ""
 echo "=== Instalación finalizada ==="

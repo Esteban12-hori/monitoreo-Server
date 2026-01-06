@@ -19,11 +19,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
-    ServerConfigUpdateSchema
+    ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema
 )
 from .email_utils import send_alert_email
 import time
@@ -402,6 +402,13 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
             
             if alert_cfg:
+                # Obtener destinatarios extra
+                extra_recipients_objs = sess.execute(select(AlertRecipient)).scalars().all()
+                extra_recipients = [{"email": r.email, "name": r.name} for r in extra_recipients_objs]
+                
+                # Datos completos para el correo
+                full_metrics = payload.model_dump()
+
                 current_time = time.time()
                 
                 # Check CPU
@@ -409,7 +416,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "cpu")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent)
+                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent, extra_recipients, full_metrics)
                         _alert_state[key] = current_time
                         
                 # Check Memory
@@ -418,7 +425,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "memory")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent)
+                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent, extra_recipients, full_metrics)
                         _alert_state[key] = current_time
 
                 # Check Disk
@@ -426,7 +433,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     key = (payload.server_id, "disk")
                     last_sent = _alert_state.get(key, 0)
                     if current_time - last_sent > ALERT_COOLDOWN:
-                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent)
+                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent, extra_recipients, full_metrics)
                         _alert_state[key] = current_time
 
         except Exception as e:

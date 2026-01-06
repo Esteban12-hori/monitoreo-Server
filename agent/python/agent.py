@@ -76,7 +76,16 @@ def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls:
                 timeout=10,
                 verify=verify_tls if verify_tls else True,
             )
-            if resp.status_code != 200:
+            if resp.status_code == 200:
+                try:
+                    rj = resp.json()
+                    new_interval = rj.get("report_interval")
+                    if new_interval and isinstance(new_interval, int) and new_interval != interval:
+                        logging.info("Actualizando intervalo de %ss a %ss", interval, new_interval)
+                        interval = new_interval
+                except Exception:
+                    pass
+            else:
                 logging.error("Error enviando métricas %s %s", resp.status_code, resp.text)
         except Exception as e:
             logging.exception("Excepción enviando métricas: %s", e)

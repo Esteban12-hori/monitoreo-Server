@@ -1,8 +1,8 @@
 import sys
 import os
 
-# Agregar el directorio actual al path para poder importar app
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Agregar el directorio padre (server) al path para poder importar app
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.main import Session, engine, User, get_password_hash
 from sqlalchemy import select

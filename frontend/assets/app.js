@@ -99,9 +99,11 @@ function LineChart({ labels, data, label, color='#22d3ee' }) {
 
 function AdminPanel() {
     const [users, setUsers] = useState([]);
+    const [recipients, setRecipients] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false });
+    const [newRecipient, setNewRecipient] = useState({ email: '', name: '' });
 
     const loadUsers = async () => {
         setLoading(true);
@@ -116,8 +118,16 @@ function AdminPanel() {
         }
     };
 
+    const loadRecipients = async () => {
+        try {
+            const data = await fetchJSON('/api/admin/recipients');
+            setRecipients(data);
+        } catch (e) { console.error(e); }
+    };
+
     useEffect(() => {
         loadUsers();
+        loadRecipients();
     }, []);
 
     const handleDelete = async (id) => {
@@ -125,6 +135,16 @@ function AdminPanel() {
         try {
             await fetchJSON(`/api/admin/users/${id}`, { method: 'DELETE' });
             loadUsers();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    const handleDeleteRecipient = async (id) => {
+        if (!confirm('¿Eliminar destinatario?')) return;
+        try {
+            await fetchJSON(`/api/admin/recipients/${id}`, { method: 'DELETE' });
+            loadRecipients();
         } catch (e) {
             alert('Error: ' + e.message);
         }
@@ -149,6 +169,21 @@ function AdminPanel() {
             loadUsers();
         } catch (e) {
             alert('Error creando usuario: ' + e.message);
+        }
+    };
+
+    const handleCreateRecipient = async () => {
+        if (!newRecipient.email) return;
+        try {
+            await fetchJSON('/api/admin/recipients', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newRecipient)
+            });
+            setNewRecipient({ email: '', name: '' });
+            loadRecipients();
+        } catch (e) {
+            alert('Error creando destinatario: ' + e.message);
         }
     };
 
@@ -189,7 +224,7 @@ function AdminPanel() {
             )
         ),
 
-        React.createElement('div', { className: 'card' },
+        React.createElement('div', { className: 'card', style: { marginBottom: 40 } },
             React.createElement('div', { className: 'title' }, 'Usuarios Registrados'),
             loading ? 'Cargando...' : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
                 React.createElement('thead', null,
@@ -212,6 +247,53 @@ function AdminPanel() {
                                 React.createElement('button', { 
                                     style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
                                     onClick: () => handleDelete(u.id)
+                                }, 'Eliminar')
+                            )
+                        )
+                    )
+                )
+            )
+        ),
+
+        React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
+            React.createElement('div', { className: 'title' }, 'Destinatarios de Alertas Extra'),
+            React.createElement('div', { className: 'muted', style: {marginBottom: 10} }, 'Personas adicionales que recibirán las alertas por correo.'),
+            React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
+                React.createElement('input', { 
+                    placeholder: 'Email', 
+                    value: newRecipient.email, 
+                    onChange: e => setNewRecipient({...newRecipient, email: e.target.value}) 
+                }),
+                React.createElement('input', { 
+                    placeholder: 'Nombre (Opcional)', 
+                    value: newRecipient.name, 
+                    onChange: e => setNewRecipient({...newRecipient, name: e.target.value}) 
+                }),
+                React.createElement('button', { onClick: handleCreateRecipient }, 'Añadir Destinatario')
+            )
+        ),
+
+        React.createElement('div', { className: 'card' },
+            React.createElement('div', { className: 'title' }, 'Lista de Destinatarios'),
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
+                React.createElement('thead', null,
+                    React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+                        React.createElement('th', { style: { padding: 8 } }, 'ID'),
+                        React.createElement('th', { style: { padding: 8 } }, 'Email'),
+                        React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
+                        React.createElement('th', { style: { padding: 8 } }, 'Acciones')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    recipients.map(r => 
+                        React.createElement('tr', { key: r.id, style: { borderBottom: '1px solid #222' } },
+                            React.createElement('td', { style: { padding: 8 } }, r.id),
+                            React.createElement('td', { style: { padding: 8 } }, r.email),
+                            React.createElement('td', { style: { padding: 8 } }, r.name || '-'),
+                            React.createElement('td', { style: { padding: 8 } },
+                                React.createElement('button', { 
+                                    style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
+                                    onClick: () => handleDeleteRecipient(r.id)
                                 }, 'Eliminar')
                             )
                         )

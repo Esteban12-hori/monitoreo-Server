@@ -63,6 +63,40 @@ def main():
         ssl_key = input("Ruta ssl keyfile: ").strip()
         ssl_cert = input("Ruta ssl certfile: ").strip()
 
+    print_step("Configuración de Email (Opcional)")
+    configure_email = input("¿Configurar envío de correos? (y/N): ").strip().lower() == "y"
+    smtp_server = ""
+    smtp_port = "587"
+    smtp_user = ""
+    smtp_password = ""
+    smtp_from = ""
+    smtp_tls = "true"
+    email_subject_prefix = "[Monitoreo]"
+
+    if configure_email:
+        smtp_server = input("SMTP Server (ej: smtp.gmail.com): ").strip()
+        smtp_port = input("SMTP Port [587]: ").strip() or "587"
+        smtp_user = input("SMTP User (email): ").strip()
+        smtp_password = input("SMTP Password: ").strip()
+        smtp_from = input(f"From Email [{smtp_user}]: ").strip() or smtp_user
+        smtp_tls = input("Use TLS? (true/false) [true]: ").strip().lower() or "true"
+        email_subject_prefix = input("Prefijo de Asunto [[Monitoreo]]: ").strip() or "[Monitoreo]"
+
+    # Generar archivo .env
+    env_file = REPO_ROOT / ".env"
+    env_content = f"""DASHBOARD_TOKEN={dashboard_token}
+CACHE_MAX_ITEMS={cache_max}
+SMTP_SERVER={smtp_server}
+SMTP_PORT={smtp_port}
+SMTP_USER={smtp_user}
+SMTP_PASSWORD={smtp_password}
+SMTP_FROM_EMAIL={smtp_from}
+SMTP_TLS={smtp_tls}
+EMAIL_SUBJECT_PREFIX={email_subject_prefix}
+"""
+    print_step(f"Generando archivo .env en {env_file}")
+    env_file.write_text(env_content, encoding="utf-8")
+
     run_sh = REPO_ROOT / "scripts" / "run_backend.sh"
     run_ps = REPO_ROOT / "scripts" / "run_backend.ps1"
 
@@ -71,8 +105,7 @@ def main():
     run_sh.write_text(
         """#!/usr/bin/env bash
 set -euo pipefail
-export DASHBOARD_TOKEN=""" + dashboard_token + """
-export CACHE_MAX_ITEMS=""" + cache_max + """
+# Las variables se cargan desde .env gracias a python-dotenv en el backend
 """ + (f"{uvicorn_path(venv_path)} app.main:app --host {host} --port {port} --app-dir server --ssl-keyfile {ssl_key} --ssl-certfile {ssl_cert}\n" if use_tls else f"{uvicorn_path(venv_path)} app.main:app --host {host} --port {port} --app-dir server\n"),
         encoding="utf-8",
     )
@@ -81,8 +114,7 @@ export CACHE_MAX_ITEMS=""" + cache_max + """
     # PowerShell
     run_ps.write_text(
         """
-$env:DASHBOARD_TOKEN = '""" + dashboard_token + """'
-$env:CACHE_MAX_ITEMS = '""" + cache_max + """'
+# Las variables se cargan desde .env gracias a python-dotenv en el backend
 """ + (f"& '{uvicorn_path(venv_path)}' app.main:app --host {host} --port {port} --app-dir server --ssl-keyfile '{ssl_key}' --ssl-certfile '{ssl_cert}'\n" if use_tls else f"& '{uvicorn_path(venv_path)}' app.main:app --host {host} --port {port} --app-dir server\n"),
         encoding="utf-8",
     )

@@ -11,6 +11,18 @@ NGINX_LINK="/etc/nginx/sites-enabled/monitoreo"
 
 echo "=== Configuración del Servidor Web (Nginx) ==="
 
+# 0. Verificar Backend (Facilitar instalación)
+if [ ! -f "$REPO_ROOT/.env" ]; then
+    echo "⚠️  No se detectó configuración del backend (archivo .env)."
+    read -p "¿Deseas ejecutar el instalador del backend primero? (y/N): " RUN_BACKEND
+    if [[ "$RUN_BACKEND" =~ ^[Yy]$ ]]; then
+        echo "🚀 Iniciando instalador del backend..."
+        "$REPO_ROOT/scripts/00_install_backend.sh"
+    else
+        echo "⚠️  Saltando instalación del backend. Asegúrate de configurarlo manualmente."
+    fi
+fi
+
 # 1. Verificar Nginx
 if ! command -v nginx >/dev/null; then
     echo "⚠️  Nginx no encontrado. Instalando..."
