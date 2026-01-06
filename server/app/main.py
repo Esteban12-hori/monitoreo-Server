@@ -22,8 +22,11 @@ from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, C
 from .models import Base, Server, Metric, AlertConfig, User, UserSession
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
-    UserCreateSchema, UserResponseSchema, ChangePasswordSchema
+    UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
+    ServerConfigUpdateSchema
 )
+from .email_utils import send_alert_email
+import time
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -139,6 +142,10 @@ def startup():
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
 _cache_order: dict[str, int] = {}
+
+# Estado de alertas enviadas: {(server_id, alert_type): timestamp}
+_alert_state: dict[tuple[str, str], float] = {}
+ALERT_COOLDOWN = 3600  # 1 hora
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -291,6 +298,33 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         servers = sess.execute(select(Server)).scalars().all()
         return [{"server_id": s.server_id, "created_at": str(s.created_at)} for s in servers]
 
+@app.delete("/api/admin/servers/{server_id}")
+def delete_server(server_id: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado")
+        sess.delete(srv)
+        sess.commit()
+        
+        # Limpiar caché si existe
+        if server_id in _cache:
+            del _cache[server_id]
+            
+        return {"status": "deleted", "server_id": server_id}
+
+
+@app.put("/api/admin/servers/{server_id}/config")
+def update_server_config(server_id: str, payload: ServerConfigUpdateSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado")
+        
+        srv.report_interval = payload.report_interval
+        sess.commit()
+        return {"status": "updated", "server_id": server_id, "report_interval": srv.report_interval}
+
 
 @app.post("/api/metrics")
 def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = Header(None)):
@@ -330,6 +364,42 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
         sess.add(m)
         sess.commit()
 
+        # Verificar Alertas
+        try:
+            # Cargar configuración de alertas
+            alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+            
+            if alert_cfg:
+                current_time = time.time()
+                
+                # Check CPU
+                if alert_cfg.cpu_total_percent > 0 and payload.cpu.total >= alert_cfg.cpu_total_percent:
+                    key = (payload.server_id, "cpu")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent)
+                        _alert_state[key] = current_time
+                        
+                # Check Memory
+                mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
+                if alert_cfg.memory_used_percent > 0 and mem_percent >= alert_cfg.memory_used_percent:
+                    key = (payload.server_id, "memory")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent)
+                        _alert_state[key] = current_time
+
+                # Check Disk
+                if alert_cfg.disk_used_percent > 0 and payload.disk.percent >= alert_cfg.disk_used_percent:
+                    key = (payload.server_id, "disk")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent)
+                        _alert_state[key] = current_time
+
+        except Exception as e:
+            print(f"Error verificando alertas: {e}")
+
         # Actualizar caché en memoria
         try:
             entry = {
@@ -351,7 +421,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
         except Exception:
             # No bloquear por errores de caché
             pass
-        return {"status": "ok"}
+        return {"status": "ok", "report_interval": srv.report_interval}
 
 
 @app.get("/api/metrics/history")
