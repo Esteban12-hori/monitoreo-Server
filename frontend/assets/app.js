@@ -331,7 +331,12 @@ function App() {
     }
     try {
       const health = await fetchJSON('/api/health');
-      setStatus({ ok: !!health.ok, message: health.ok ? '' : 'Backend no disponible' });
+      if (!health.ok) {
+        setStatus({ ok: false, message: `Backend Error: ${health.error || 'Unknown error'}` });
+        return;
+      }
+      setStatus({ ok: true, message: '' });
+
       const ss = await fetchJSON('/api/servers');
       setServers(ss);
       const cfg = await fetchJSON('/api/alerts');

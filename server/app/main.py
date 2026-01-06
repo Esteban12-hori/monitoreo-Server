@@ -530,8 +530,8 @@ def health():
         with Session(engine) as sess:
             sess.execute(select(Server)).first()
         return {"ok": True}
-    except Exception:
-        return {"ok": False}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 # --- Servir Frontend (debe ir al final) ---
 frontend_path = Path(__file__).resolve().parent.parent.parent / "frontend"
