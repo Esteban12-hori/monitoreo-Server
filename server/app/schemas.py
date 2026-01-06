@@ -75,3 +75,6 @@ class UserResponseSchema(BaseModel):
 class ChangePasswordSchema(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=6)
+
+class ServerConfigUpdateSchema(BaseModel):
+    report_interval: int = Field(..., ge=5, le=86400) # 5s to 24h
