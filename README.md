@@ -34,32 +34,37 @@ Este proyecto es una solución completa para el monitoreo de servidores en tiemp
 
 ## 🛠️ Instalación y Puesta en Marcha
 
-### 1. Servidor Central
+### 1. Servidor Central (Backend + Web)
 
-1.  **Clonar/Descargar el repositorio.**
-2.  **Navegar a la carpeta raíz.**
-3.  **Crear un entorno virtual (recomendado):**
-    ```bash
-    python -m venv .venv
-    # Windows
-    .venv\Scripts\activate
-    # Linux/Mac
-    source .venv/bin/activate
-    ```
-4.  **Instalar dependencias:**
-    ```bash
-    pip install -r server/requirements.txt
-    ```
-5.  **Iniciar el servidor:**
-    ```bash
-    uvicorn server.app.main:app --host 0.0.0.0 --port 8000 --reload
-    ```
-6.  **Acceder al Dashboard:**
-    *   Abre tu navegador en `http://localhost:8000` (o la IP del servidor).
+Hemos organizado la instalación en scripts numerados dentro de la carpeta `scripts/`.
 
-**Configuración de Usuarios Iniciales:**
-Los usuarios por defecto se configuran en `server/app/config.py`. Al iniciar, el sistema crea estos usuarios en la base de datos `data/monitor.db` si no existen.
-*   *Nota:* Se recomienda cambiar las contraseñas en el archivo de configuración o a través del panel de administración.
+**Opción A: Instalación Rápida (Linux)**
+Ejecuta el script maestro desde la raíz:
+```bash
+./setup_linux.sh
+```
+
+**Opción B: Instalación Paso a Paso (Recomendado)**
+
+1.  **Backend (API + Base de Datos):**
+    *   **Linux/macOS:** `./scripts/00_install_backend.sh`
+    *   **Windows:** `.\scripts\00_install_backend.ps1`
+    *   *Acción:* Crea entorno virtual, instala dependencias y genera configuración `.env` (incluyendo correo).
+
+2.  **Frontend y Servidor Web (Nginx):**
+    *   **Linux:** `./scripts/02_setup_web.sh`
+    *   *Acción:* Instala Nginx, despliega el frontend compilado y configura el proxy inverso.
+
+**Opción C: Ejecución Manual (Desarrollo)**
+1.  Crear entorno virtual: `python -m venv .venv`
+2.  Activar entorno.
+3.  Instalar dependencias: `pip install -r server/requirements.txt`
+4.  Crear `.env` (ver `server/app/config.py` para variables).
+5.  Ejecutar: `uvicorn server.app.main:app --host 0.0.0.0 --port 8000 --reload`
+
+**Usuarios Iniciales:**
+El sistema crea usuarios por defecto al iniciar (ver `server/app/config.py`).
+Scripts de utilidad se encuentran en `server/scripts/` (ej. `create_users_manual.py`).
 
 ### 2. Agente (En cada servidor a monitorear)
 
@@ -96,11 +101,63 @@ Por defecto, el agente envía métricas cada **2400 segundos** (40 minutos). Par
 
 ---
 
+## 🔔 Sistema de Alertas por Correo
+
+El sistema incluye un módulo robusto de notificaciones por correo electrónico utilizando la API de **Mailjet**.
+
+### 1. Características
+*   **Diseño Moderno:** Correos con formato HTML responsivo, encabezados de alerta claros y tablas detalladas de uso de recursos.
+*   **Información Detallada:** Incluye porcentajes de uso de CPU, RAM (MB usados/totales) y Disco (GB usados/totales).
+*   **Control de Spam:** Implementa un **"Cooldown" de 1 hora**. Si se envía una alerta de "CPU Alto" para el "Servidor-01", no se enviará otra alerta igual hasta que pase 1 hora, evitando saturar la bandeja de entrada.
+*   **Destinatarios Múltiples:** Soporta envío a una lista configurable de administradores y usuarios adicionales gestionados en base de datos.
+
+### 2. Configuración (.env)
+Las credenciales se configuran en el archivo `.env` o en las variables de entorno del sistema:
+
+```env
+# Mailjet API Credentials
+EMAIL_API_KEY=tu_api_key
+EMAIL_SECRET_KEY=tu_secret_key
+EMAIL_SENDER_EMAIL=remitente@dominio.com
+EMAIL_SENDER_NAME="Nombre del Remitente"
+# Correos base (separados por coma)
+EMAIL_RECEIVER_EMAILS=["admin1@dominio.com","admin2@dominio.com"]
+```
+
+### 3. Gestión de Destinatarios
+Además de los correos configurados en las variables de entorno, el sistema permite añadir destinatarios dinámicamente a través de la base de datos (Tabla `alert_recipients`). Esto permite que otros interesados reciban notificaciones sin reiniciar el servidor.
+
+---
+
+## 🔒 Seguridad
+
+El sistema implementa varias capas de seguridad para proteger la infraestructura:
+
+*   **Autenticación JWT:** Todas las comunicaciones entre el frontend, backend y agentes están firmadas y validadas con tokens JWT.
+*   **Rate Limiting:** Protección contra ataques de fuerza bruta en el login y endpoints críticos.
+*   **Trusted Hosts:** Middleware que asegura que el servidor solo responda a peticiones desde dominios permitidos.
+*   **Validación de Datos:** Uso de Pydantic para asegurar que todos los datos entrantes cumplan con los esquemas esperados.
+
+---
+
 ## 🖥️ Ejecución en Segundo Plano (Como Servicio)
 
-Para que el agente se ejecute automáticamente al iniciar el sistema y funcione en segundo plano, sigue estos pasos:
+### 1. Backend (Servidor Central) - Linux
 
-### 🐧 Linux (Systemd)
+Se incluye un archivo de ejemplo en `deploy/systemd/monitoreo-backend.service.example`.
+
+1.  **Editar:** Ajusta las rutas (`WorkingDirectory`, `ExecStart`) y el usuario en el archivo.
+2.  **Instalar:**
+    ```bash
+    sudo cp deploy/systemd/monitoreo-backend.service.example /etc/systemd/system/monitoreo-backend.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable monitoreo-backend
+    sudo systemctl start monitoreo-backend
+    ```
+
+### 2. Agente - Linux (Systemd)
+
+Para que el agente se ejecute automáticamente al iniciar el sistema y funcione en segundo plano, sigue estos pasos:
 
 1.  Crear un archivo de servicio: `sudo nano /etc/systemd/system/monitor-agent.service`
 2.  Pegar el siguiente contenido (ajustando las rutas):
