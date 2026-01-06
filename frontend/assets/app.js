@@ -22,7 +22,10 @@ function getApiBase() {
   const params = new URLSearchParams(window.location.search);
   const override = params.get('api');
   const stored = localStorage.getItem('api_base');
-  const base = override || stored || window.location.origin;
+  let base = override || stored || window.location.origin;
+  if (base === 'null' || base.startsWith('file:')) {
+      base = 'http://localhost:8000';
+  }
   const normalized = base.endsWith('/') ? base.slice(0, -1) : base;
   if (override && override !== stored) {
     try { localStorage.setItem('api_base', normalized); } catch {}
@@ -41,12 +44,19 @@ function fetchJSON(url, opts = {}) {
     if (!r.ok) {
         if (r.status === 401) throw new Error('HTTP 401');
         const txt = await r.text();
+        let json;
         try {
-            const json = JSON.parse(txt);
-            throw new Error(json.detail || `HTTP ${r.status}`);
+            json = JSON.parse(txt);
         } catch (e) {
              throw new Error(txt || `HTTP ${r.status}`);
         }
+        if (json.detail) {
+             const d = json.detail;
+             if (typeof d === 'string') throw new Error(d);
+             if (Array.isArray(d)) throw new Error(d.map(x => x.msg || JSON.stringify(x)).join('; '));
+             throw new Error(JSON.stringify(d));
+        }
+        throw new Error(txt || `HTTP ${r.status}`);
     }
     if (!ct.includes('application/json')) throw new Error('Respuesta no JSON');
     return await r.json();
@@ -123,6 +133,10 @@ function AdminPanel() {
     const handleCreate = async () => {
         if (!newUser.email || !newUser.password) {
             alert('Email y contraseña obligatorios');
+            return;
+        }
+        if (newUser.password.length < 6) {
+            alert('La contraseña debe tener al menos 6 caracteres');
             return;
         }
         try {
@@ -248,7 +262,8 @@ function App() {
         setAuthed(false);
         setStatus({ ok: false, message: 'Sesión expirada o inválida. Inicie sesión.' });
       } else {
-        setStatus({ ok: false, message: `Error de conexión${msg ? ': ' + msg : ''}` });
+        const apiBase = getApiBase();
+        setStatus({ ok: false, message: `Error conectando a ${apiBase}: ${msg}` });
       }
     }
   };
@@ -283,7 +298,7 @@ function App() {
     }
   }, [selected, currentView]);
 
-  const latest = history[history.length - 1] || { memory:{total:0,used:0,free:0,cache:0}, cpu:{total:0,per_core:[]}, disk:{total:0,used:0,free:0,percent:0}, docker:{running_containers:0} };
+  const latest = history[history.length - 1] || { memory:{total:0,used:0,free:0,cache:0}, cpu:{total:0,per_core:[]}, disk:{total:0,used:0,free:0,percent:0}, docker:{running_containers:0, containers:[]} };
   const labels = history.map(h => new Date(h.ts).toLocaleTimeString());
   const cpuData = history.map(h => h.cpu.total);
   const memData = history.map(h => Math.round((h.memory.used / h.memory.total) * 100));
@@ -384,6 +399,17 @@ function App() {
       );
   }
 
+  const currentServer = servers.find(s => s.server_id === selected);
+  const currentInterval = currentServer ? (currentServer.report_interval || 2400) : 2400;
+
+  const INTERVAL_OPTIONS = [
+      { label: 'Tiempo Real (10s)', value: 10 },
+      { label: '5 Minutos', value: 300 },
+      { label: '30 Minutos', value: 1800 },
+      { label: '1 Hora', value: 3600 },
+      { label: '24 Horas', value: 86400 },
+  ];
+
   // VISTA DASHBOARD
   return (
     React.createElement('div', { className: 'wrap' },
@@ -392,24 +418,54 @@ function App() {
         React.createElement('div', { style: { color: '#ef4444' } }, status.message || 'Sin datos en vivo'),
         React.createElement('div', { className: 'muted' }, 'Verifique token, TLS y disponibilidad del backend')
       ),
-      React.createElement('div', { className: 'card', style: { marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 } },
+      React.createElement('div', { className: 'card', style: { marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
         React.createElement('label', null, 'Servidor: '),
         React.createElement('select', { value: selected, onChange: e => setSelected(e.target.value) },
           servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, s.server_id))
         ),
         React.createElement('button', { onClick: () => setShowChooser(v => !v) }, 'Cambiar servidor'),
-        React.createElement('span', { className: 'muted' }, 'Intervalo: 40m')
+        
+        React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
+            React.createElement('span', { className: 'muted' }, 'Intervalo:'),
+            (userInfo && userInfo.is_admin && selected) 
+                ? React.createElement('select', { 
+                    value: currentInterval, 
+                    onChange: e => handleUpdateInterval(selected, e.target.value),
+                    style: { padding: '4px 8px', borderRadius: 4, background: '#1e293b', color: '#fff', border: '1px solid #444' }
+                  },
+                    INTERVAL_OPTIONS.map(o => React.createElement('option', { key: o.value, value: o.value }, o.label))
+                  )
+                : React.createElement('span', { className: 'muted' }, 
+                    INTERVAL_OPTIONS.find(o => o.value === currentInterval)?.label || `${currentInterval}s`
+                  )
+        )
       ),
       showChooser && React.createElement('div', { className: 'card', style: { marginBottom: 16 } },
         React.createElement('div', { className: 'title' }, 'Servidores conectados'),
         servers.length === 0
           ? React.createElement('div', { className: 'muted' }, 'Sin servidores registrados')
-          : React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-              servers.map(s => React.createElement('button', {
+          : React.createElement('div', { style: { display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' } },
+              servers.map(s => React.createElement('div', {
                 key: s.server_id,
-                onClick: () => { setSelected(s.server_id); setShowChooser(false); },
-                style: { background: s.server_id === selected ? '#22d3ee' : undefined }
-              }, s.server_id))
+                style: { 
+                    border: '1px solid #444', 
+                    padding: 8, 
+                    borderRadius: 4, 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    background: s.server_id === selected ? '#1e293b' : undefined,
+                    borderColor: s.server_id === selected ? '#22d3ee' : '#444',
+                    cursor: 'pointer'
+                },
+                onClick: () => { setSelected(s.server_id); setShowChooser(false); }
+              }, 
+                React.createElement('span', { style: { fontWeight: 500 } }, s.server_id),
+                userInfo && userInfo.is_admin && React.createElement('button', {
+                    style: { backgroundColor: '#ef4444', fontSize: '0.7rem', padding: '2px 6px', marginLeft: 8, zIndex: 10 },
+                    onClick: (e) => handleDeleteServer(s.server_id, e)
+                }, 'Eliminar')
+              ))
             ),
         React.createElement('div', { style: { marginTop: 8 } },
           React.createElement('button', { onClick: () => setShowChooser(false) }, 'Cerrar')
