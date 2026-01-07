@@ -39,6 +39,20 @@ def migrate():
             else:
                 print(f"   ⚠️  Could not add 'group_name': {e}")
 
+    # 3. Add receive_alerts to users
+    print("3️⃣  Checking/Applying user migrations...")
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN receive_alerts BOOLEAN DEFAULT 0"))
+            conn.commit()
+            print("   ✅ Added 'receive_alerts' to 'users' table.")
+        except Exception as e:
+            err = str(e).lower()
+            if "duplicate column name" in err:
+                print("   ℹ️  Column 'receive_alerts' already exists in 'users'.")
+            else:
+                print(f"   ⚠️  Could not add 'receive_alerts': {e}")
+
     print("\n✅ Migration V3 completed.")
 
 if __name__ == "__main__":

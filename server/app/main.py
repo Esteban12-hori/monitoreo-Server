@@ -320,7 +320,15 @@ def register_server(payload: RegisterServerSchema):
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         servers = sess.execute(select(Server)).scalars().all()
-        return [{"server_id": s.server_id, "created_at": str(s.created_at), "group_name": s.group_name} for s in servers]
+        return [
+            {
+                "server_id": s.server_id, 
+                "created_at": str(s.created_at), 
+                "group_name": s.group_name,
+                "report_interval": s.report_interval
+            } 
+            for s in servers
+        ]
 
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):

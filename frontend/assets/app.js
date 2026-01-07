@@ -172,25 +172,163 @@ function ServerAssignmentModal({ user, onClose }) {
     );
 }
 
-function ServerGroupRow({ server, onUpdate }) {
+function GroupSelectionModal({ groups, onSelect, onClose }) {
+    const [newGroup, setNewGroup] = useState('');
+
+    return React.createElement('div', { 
+        style: { 
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 
+        },
+        onClick: (e) => { if(e.target === e.currentTarget) onClose(); }
+    },
+        React.createElement('div', { className: 'card', style: { width: 400, maxWidth: '90%' } },
+            React.createElement('div', { className: 'title' }, 'Seleccionar Grupo'),
+            React.createElement('div', { className: 'muted', style: { marginBottom: 15 } }, 'Elige un grupo existente o crea uno nuevo.'),
+            
+            // Grid de grupos existentes
+            React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20, maxHeight: '40vh', overflowY: 'auto' } },
+                groups.length === 0 ? React.createElement('div', { className: 'muted' }, 'No hay grupos creados aún.') :
+                groups.map(g => 
+                    React.createElement('button', {
+                        key: g,
+                        onClick: () => onSelect(g),
+                        style: {
+                            background: '#1e293b',
+                            border: '1px solid #475569',
+                            color: '#e2e8f0',
+                            padding: '8px 12px',
+                            borderRadius: 20,
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            fontSize: '0.9rem'
+                        },
+                        onMouseOver: e => e.currentTarget.style.borderColor = '#38bdf8',
+                        onMouseOut: e => e.currentTarget.style.borderColor = '#475569'
+                    }, g)
+                )
+            ),
+
+            React.createElement('div', { style: { borderTop: '1px solid #334155', paddingTop: 15 } },
+                React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 8, color: '#94a3b8' } }, 'Crear Nuevo Grupo'),
+                React.createElement('div', { style: { display: 'flex', gap: 8 } },
+                    React.createElement('input', {
+                        placeholder: 'Nombre del nuevo grupo...',
+                        value: newGroup,
+                        onChange: e => setNewGroup(e.target.value),
+                        onKeyDown: e => {
+                            if (e.key === 'Enter' && newGroup.trim()) onSelect(newGroup.trim());
+                        },
+                        style: { 
+                            flex: 1,
+                            background: '#0f172a',
+                            border: '1px solid #475569',
+                            borderRadius: 4,
+                            padding: '8px 12px',
+                            color: '#e2e8f0',
+                            outline: 'none'
+                        }
+                    }),
+                    React.createElement('button', {
+                        onClick: () => { if(newGroup.trim()) onSelect(newGroup.trim()); },
+                        disabled: !newGroup.trim(),
+                        style: { 
+                            background: newGroup.trim() ? '#3b82f6' : '#94a3b8',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: 4,
+                            padding: '0 16px',
+                            cursor: newGroup.trim() ? 'pointer' : 'not-allowed',
+                            fontWeight: 500
+                        }
+                    }, 'Crear')
+                )
+            ),
+            
+            React.createElement('button', { 
+                onClick: onClose, 
+                style: { marginTop: 15, width: '100%', background: 'transparent', border: '1px solid #475569', color: '#94a3b8' } 
+            }, 'Cancelar')
+        )
+    );
+}
+
+function ServerGroupRow({ server, onUpdate, selected, onToggle, onOpenPicker }) {
     const [group, setGroup] = useState(server.group_name || '');
+    const [saving, setSaving] = useState(false);
+    
+    // Update local state when server prop changes (e.g. bulk update)
+    useEffect(() => {
+        setGroup(server.group_name || '');
+    }, [server.group_name]);
+
     const hasChanged = group !== (server.group_name || '');
 
-    return React.createElement('tr', { style: { borderBottom: '1px solid #222' } },
-        React.createElement('td', { style: { padding: 8 } }, server.server_id),
-        React.createElement('td', { style: { padding: 8 } },
+    const handleSave = async () => {
+        setSaving(true);
+        await onUpdate(server.server_id, group);
+        setSaving(false);
+    };
+
+    return React.createElement('tr', { style: { borderBottom: '1px solid #334155', transition: 'background 0.2s', background: selected ? '#1e3a8a' : 'transparent' } },
+        React.createElement('td', { style: { padding: '12px 16px', width: 40 } },
             React.createElement('input', { 
-                value: group, 
-                onChange: e => setGroup(e.target.value),
-                placeholder: 'Sin grupo',
-                style: { background: '#111', border: '1px solid #444', color: '#fff', padding: 4 }
+                type: 'checkbox', 
+                checked: selected, 
+                onChange: () => onToggle(server.server_id),
+                style: { transform: 'scale(1.2)', cursor: 'pointer' }
             })
         ),
-        React.createElement('td', { style: { padding: 8 } },
+        React.createElement('td', { style: { padding: '12px 16px', color: '#cbd5e1' } }, 
+            React.createElement('div', { style: { fontWeight: 500 } }, server.server_id)
+        ),
+        React.createElement('td', { style: { padding: '12px 16px' } },
+            React.createElement('div', { style: { display: 'flex', gap: 6 } },
+                React.createElement('input', { 
+                    value: group, 
+                    onChange: e => setGroup(e.target.value),
+                    placeholder: 'Sin grupo asignado',
+                    list: 'groups-datalist',
+                    style: { 
+                        background: '#0f172a', 
+                        border: '1px solid #475569', 
+                        borderRadius: '4px',
+                        color: '#fff', 
+                        padding: '6px 10px', 
+                        width: '100%',
+                        outline: 'none',
+                        flex: 1
+                    }
+                }),
+                React.createElement('button', {
+                    onClick: () => onOpenPicker(server),
+                    title: 'Seleccionar Grupo',
+                    style: {
+                        background: '#334155',
+                        border: '1px solid #475569',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        padding: '0 10px'
+                    }
+                }, '📂')
+            )
+        ),
+        React.createElement('td', { style: { padding: '12px 16px' } },
             hasChanged && React.createElement('button', { 
-                onClick: () => onUpdate(server.server_id, group),
-                style: { fontSize: '0.8rem', padding: '4px 8px' } 
-            }, 'Guardar')
+                onClick: handleSave,
+                disabled: saving,
+                style: { 
+                    fontSize: '0.8rem', 
+                    padding: '6px 12px', 
+                    backgroundColor: saving ? '#94a3b8' : '#22c55e', 
+                    color: '#fff', 
+                    border: 'none', 
+                    borderRadius: '4px',
+                    cursor: saving ? 'wait' : 'pointer',
+                    fontWeight: 500,
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                } 
+            }, saving ? 'Guardando...' : 'Guardar')
         )
     );
 }
@@ -198,6 +336,25 @@ function ServerGroupRow({ server, onUpdate }) {
 function ServerGroupManager() {
     const [servers, setServers] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [selectedIds, setSelectedIds] = useState([]);
+    const [bulkGroup, setBulkGroup] = useState('');
+    const [bulkSaving, setBulkSaving] = useState(false);
+    const [showGroupModal, setShowGroupModal] = useState(false);
+    const [targetServerForModal, setTargetServerForModal] = useState(null);
+    
+    // Grupos guardados localmente para mejorar la UX (permitir "crear" sin asignar inmediatamente)
+    const [savedGroups, setSavedGroups] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('saved_groups') || '[]'); } 
+        catch { return []; }
+    });
+
+    const addSavedGroup = (g) => {
+        if (g && !savedGroups.includes(g)) {
+            const newGroups = [...savedGroups, g].sort();
+            setSavedGroups(newGroups);
+            localStorage.setItem('saved_groups', JSON.stringify(newGroups));
+        }
+    };
 
     const load = async () => {
         setLoading(true);
@@ -217,22 +374,133 @@ function ServerGroupManager() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ group_name: groupName || null })
             });
-            load();
+            // Update local state to remove "Guardar" button until changed again
+            setServers(prev => prev.map(s => s.server_id === sid ? { ...s, group_name: groupName } : s));
         } catch(e) { alert(e.message); }
     };
 
-    return React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
-        React.createElement('div', { className: 'title' }, 'Gestión de Grupos de Servidores'),
-        loading ? 'Cargando...' : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
-            React.createElement('thead', null,
-                React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
-                    React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
-                    React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
-                    React.createElement('th', { style: { padding: 8 } }, 'Acción')
-                )
+    const toggleId = (id) => {
+        setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    };
+
+    const toggleAll = () => {
+        if (selectedIds.length === servers.length) setSelectedIds([]);
+        else setSelectedIds(servers.map(s => s.server_id));
+    };
+
+    const handleBulkUpdate = async () => {
+        if (!bulkGroup) return alert('Escribe o selecciona un nombre de grupo para aplicar');
+        if (selectedIds.length === 0) return alert('Selecciona al menos un servidor de la lista');
+        
+        setBulkSaving(true);
+        try {
+            await Promise.all(selectedIds.map(id => 
+                fetchJSON(`/api/admin/servers/${id}/group`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_name: bulkGroup })
+                })
+            ));
+            
+            setServers(servers.map(s => selectedIds.includes(s.server_id) ? { ...s, group_name: bulkGroup } : s));
+            setSelectedIds([]);
+            setBulkGroup('');
+            alert(`Grupo "${bulkGroup}" asignado a ${selectedIds.length} servidores.`);
+        } catch (e) { 
+            alert('Error en actualización masiva: ' + e.message); 
+        } finally {
+            setBulkSaving(false);
+        }
+    };
+
+    const openPickerForServer = (server) => {
+        setTargetServerForModal(server);
+        setShowGroupModal(true);
+    };
+
+    const uniqueGroups = [...new Set([
+        ...servers.map(s => s.group_name).filter(g => g),
+        ...savedGroups
+    ])].sort();
+
+    return React.createElement('div', { className: 'card', style: { marginBottom: 20, border: '1px solid #334155', background: '#1e293b' } },
+        React.createElement('div', { className: 'title', style: { borderBottom: '1px solid #334155', paddingBottom: 10, marginBottom: 10 } }, 'Gestión de Grupos'),
+        
+        // Modal de selección de grupos
+        showGroupModal && React.createElement(GroupSelectionModal, {
+            groups: uniqueGroups,
+            onClose: () => { setShowGroupModal(false); setTargetServerForModal(null); },
+            onSelect: (g) => { 
+                addSavedGroup(g); // Guardar localmente para que aparezca en el futuro
+                if (targetServerForModal) {
+                    updateGroup(targetServerForModal.server_id, g);
+                } else {
+                    setBulkGroup(g); 
+                }
+                setShowGroupModal(false);
+                setTargetServerForModal(null);
+            }
+        }),
+
+        // Datalist global para el componente
+        React.createElement('datalist', { id: 'groups-datalist' },
+            uniqueGroups.map(g => React.createElement('option', { key: g, value: g }))
+        ),
+
+        // BARRA DE ACCIONES MASIVAS
+        React.createElement('div', { style: { background: '#0f172a', padding: 15, borderRadius: 6, marginBottom: 15, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } },
+            React.createElement('div', { style: { fontWeight: 600, color: '#38bdf8' } }, 'Acción Masiva:'),
+            React.createElement('div', { style: { display: 'flex', gap: 5, flex: 1, minWidth: 250 } },
+                React.createElement('input', {
+                    placeholder: 'Grupo a Asignar',
+                    value: bulkGroup,
+                    onChange: e => setBulkGroup(e.target.value),
+                    list: 'groups-datalist',
+                    style: { padding: '8px 12px', borderRadius: '4px 0 0 4px', border: '1px solid #475569', background: '#1e293b', color: '#fff', flex: 1 }
+                }),
+                React.createElement('button', {
+                    onClick: () => { setTargetServerForModal(null); setShowGroupModal(true); },
+                    style: { padding: '0 12px', background: '#334155', border: '1px solid #475569', borderLeft: 'none', borderRadius: '0 4px 4px 0', cursor: 'pointer', color: '#cbd5e1' },
+                    title: 'Ver lista de grupos'
+                }, '📂')
             ),
-            React.createElement('tbody', null,
-                servers.map(s => React.createElement(ServerGroupRow, { key: s.server_id, server: s, onUpdate: updateGroup }))
+            React.createElement('button', {
+                onClick: handleBulkUpdate,
+                disabled: bulkSaving || selectedIds.length === 0,
+                style: { 
+                    padding: '8px 16px', 
+                    background: bulkSaving ? '#94a3b8' : '#3b82f6', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: 4,
+                    cursor: bulkSaving ? 'wait' : 'pointer'
+                }
+            }, bulkSaving ? 'Aplicando...' : `Asignar a ${selectedIds.length} seleccionados`)
+        ),
+
+        loading ? React.createElement('div', { style: { padding: 20, textAlign: 'center', color: '#94a3b8' } }, 'Cargando servidores...') : 
+        React.createElement('div', { style: { overflowX: 'auto' } },
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', textAlign: 'left' } },
+                React.createElement('thead', null,
+                    React.createElement('tr', { style: { borderBottom: '2px solid #334155', color: '#94a3b8', fontSize: '0.85rem', textTransform: 'uppercase' } },
+                        React.createElement('th', { style: { padding: '8px 16px', width: 40 } }, 
+                            React.createElement('input', { type: 'checkbox', checked: selectedIds.length > 0 && selectedIds.length === servers.length, onChange: toggleAll, style: { transform: 'scale(1.2)', cursor: 'pointer' } })
+                        ),
+                        React.createElement('th', { style: { padding: '8px 16px' } }, 'Servidor'),
+                        React.createElement('th', { style: { padding: '8px 16px' } }, 'Grupo'),
+                        React.createElement('th', { style: { padding: '8px 16px', width: 120 } }, 'Acción')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    servers.map(s => React.createElement(ServerGroupRow, { 
+                        key: s.server_id, 
+                        server: s, 
+                        onUpdate: updateGroup,
+                        selected: selectedIds.includes(s.server_id),
+                        onToggle: toggleId,
+                        onOpenPicker: openPickerForServer
+                    }))
+                )
             )
         )
     );
@@ -240,14 +508,27 @@ function ServerGroupManager() {
 
 function AlertRulesManager() {
     const [rules, setRules] = useState([]);
+    const [servers, setServers] = useState([]);
     const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', emails: '' });
+    const [filterGroup, setFilterGroup] = useState('');
     
     const load = async () => {
-        const data = await fetchJSON('/api/admin/alert-rules');
-        setRules(data);
+        try {
+            const [rData, sData] = await Promise.all([
+                fetchJSON('/api/admin/alert-rules'),
+                fetchJSON('/api/servers')
+            ]);
+            setRules(rData);
+            setServers(sData);
+        } catch (e) { console.error(e); }
     };
     
     useEffect(() => { load(); }, []);
+
+    const groups = [...new Set(servers.map(s => s.group_name).filter(g => g))];
+    const filteredServers = filterGroup 
+        ? servers.filter(s => s.group_name === filterGroup)
+        : servers;
 
     const handleCreate = async () => {
         try {
@@ -264,6 +545,7 @@ function AlertRulesManager() {
                 body: JSON.stringify(payload)
             });
             setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', emails: '' });
+            setFilterGroup('');
             load();
         } catch(e) { alert(e.message); }
     };
@@ -286,11 +568,34 @@ function AlertRulesManager() {
                 React.createElement('option', { value: 'server' }, 'Servidor Específico'),
                 React.createElement('option', { value: 'group' }, 'Grupo de Servidores')
             ),
-            newRule.server_scope !== 'global' && React.createElement('input', { 
-                placeholder: newRule.server_scope === 'server' ? 'ID Servidor' : 'Nombre Grupo',
+            
+            // Selector dinámico según alcance
+            newRule.server_scope === 'server' ? React.createElement(React.Fragment, null,
+                React.createElement('select', { 
+                    value: filterGroup, 
+                    onChange: e => setFilterGroup(e.target.value),
+                    style: { padding: 8, background: '#0f172a', color: '#94a3b8', border: '1px solid #334155' } 
+                },
+                    React.createElement('option', { value: '' }, 'Filtro Grupo (Todos)'),
+                    groups.map(g => React.createElement('option', { key: g, value: g }, g))
+                ),
+                React.createElement('select', { 
+                    value: newRule.target_id, 
+                    onChange: e => setNewRule({...newRule, target_id: e.target.value}),
+                    style: { padding: 8, background: '#333', color: '#fff', border: 'none' }
+                },
+                    React.createElement('option', { value: '' }, 'Selecciona Servidor...'),
+                    filteredServers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, `${s.server_id} ${s.group_name ? `(${s.group_name})` : ''}`))
+                )
+            ) : newRule.server_scope === 'group' ? React.createElement('select', {
                 value: newRule.target_id,
-                onChange: e => setNewRule({...newRule, target_id: e.target.value})
-            }),
+                onChange: e => setNewRule({...newRule, target_id: e.target.value}),
+                style: { padding: 8, background: '#333', color: '#fff', border: 'none' }
+            },
+                React.createElement('option', { value: '' }, 'Selecciona Grupo...'),
+                groups.map(g => React.createElement('option', { key: g, value: g }, g))
+            ) : null,
+
             React.createElement('input', { 
                 placeholder: 'Emails (separados por coma)',
                 value: newRule.emails,
@@ -325,13 +630,14 @@ function AlertRulesManager() {
 }
 
 function AdminPanel() {
+    const [activeTab, setActiveTab] = useState('users');
     const [users, setUsers] = useState([]);
     const [recipients, setRecipients] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false });
     const [newRecipient, setNewRecipient] = useState({ email: '', name: '' });
-    const [assigningUser, setAssigningUser] = useState(null); // Usuario seleccionado para modal
+    const [assigningUser, setAssigningUser] = useState(null);
 
     const loadUsers = async () => {
         setLoading(true);
@@ -415,132 +721,164 @@ function AdminPanel() {
         }
     };
 
+    const tabs = [
+        { id: 'users', label: 'Usuarios' },
+        { id: 'recipients', label: 'Destinatarios Extra' },
+        { id: 'groups', label: 'Grupos de Servidores' },
+        { id: 'rules', label: 'Reglas de Alerta' }
+    ];
+
     return React.createElement('div', { className: 'wrap' },
-        React.createElement('div', { className: 'header' },
+        React.createElement('div', { className: 'header', style: { flexDirection: 'column', alignItems: 'flex-start', gap: 10, paddingBottom: 0 } },
              React.createElement('div', { className: 'title' }, 'Panel de Administración'),
+             React.createElement('div', { style: { display: 'flex', gap: 2, width: '100%', borderBottom: '1px solid #334155' } },
+                tabs.map(tab => 
+                    React.createElement('button', {
+                        key: tab.id,
+                        onClick: () => setActiveTab(tab.id),
+                        style: {
+                            background: activeTab === tab.id ? '#1e293b' : 'transparent',
+                            color: activeTab === tab.id ? '#38bdf8' : '#94a3b8',
+                            border: 'none',
+                            borderBottom: activeTab === tab.id ? '2px solid #38bdf8' : '2px solid transparent',
+                            padding: '10px 20px',
+                            cursor: 'pointer',
+                            fontWeight: 500,
+                            borderRadius: '6px 6px 0 0',
+                            transition: 'all 0.2s'
+                        }
+                    }, tab.label)
+                )
+             )
         ),
-        error && React.createElement('div', { style: { color: 'red', marginBottom: 10 } }, error),
         
-        // Componentes nuevos
-        React.createElement(ServerGroupManager),
-        React.createElement(AlertRulesManager),
+        React.createElement('div', { style: { marginTop: 20 } },
+            error && React.createElement('div', { style: { color: 'red', marginBottom: 10 } }, error),
+            
+            // CONTENIDO TABS
+            activeTab === 'groups' && React.createElement(ServerGroupManager),
+            activeTab === 'rules' && React.createElement(AlertRulesManager),
 
-        React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
-            React.createElement('div', { className: 'title' }, 'Crear Nuevo Usuario'),
-            React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
-                React.createElement('input', { 
-                    placeholder: 'Email', 
-                    value: newUser.email, 
-                    onChange: e => setNewUser({...newUser, email: e.target.value}) 
-                }),
-                React.createElement('input', { 
-                    placeholder: 'Nombre', 
-                    value: newUser.name, 
-                    onChange: e => setNewUser({...newUser, name: e.target.value}) 
-                }),
-                React.createElement('input', { 
-                    placeholder: 'Contraseña (min 6)', 
-                    type: 'password',
-                    value: newUser.password, 
-                    onChange: e => setNewUser({...newUser, password: e.target.value}) 
-                }),
-                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
-                    React.createElement('input', { 
-                        type: 'checkbox', 
-                        checked: newUser.is_admin, 
-                        onChange: e => setNewUser({...newUser, is_admin: e.target.checked}) 
-                    }),
-                    'Es Admin'
-                ),
-                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
-                    React.createElement('input', { 
-                        type: 'checkbox', 
-                        checked: newUser.receive_alerts, 
-                        onChange: e => setNewUser({...newUser, receive_alerts: e.target.checked}) 
-                    }),
-                    'Recibir Alertas'
-                ),
-                React.createElement('button', { onClick: handleCreate }, 'Crear Usuario')
-            )
-        ),
-
-        React.createElement('div', { className: 'card', style: { marginBottom: 40 } },
-            React.createElement('div', { className: 'title' }, 'Usuarios Registrados'),
-            loading ? 'Cargando...' : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
-                React.createElement('thead', null,
-                    React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
-                        React.createElement('th', { style: { padding: 8 } }, 'ID'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Email'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Rol'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Alertas'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Acciones')
+            activeTab === 'users' && React.createElement(React.Fragment, null,
+                React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
+                    React.createElement('div', { className: 'title' }, 'Crear Nuevo Usuario'),
+                    React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
+                        React.createElement('input', { 
+                            placeholder: 'Email', 
+                            value: newUser.email, 
+                            onChange: e => setNewUser({...newUser, email: e.target.value}) 
+                        }),
+                        React.createElement('input', { 
+                            placeholder: 'Nombre', 
+                            value: newUser.name, 
+                            onChange: e => setNewUser({...newUser, name: e.target.value}) 
+                        }),
+                        React.createElement('input', { 
+                            placeholder: 'Contraseña (min 6)', 
+                            type: 'password',
+                            value: newUser.password, 
+                            onChange: e => setNewUser({...newUser, password: e.target.value}) 
+                        }),
+                        React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                            React.createElement('input', { 
+                                type: 'checkbox', 
+                                checked: newUser.is_admin, 
+                                onChange: e => setNewUser({...newUser, is_admin: e.target.checked}) 
+                            }),
+                            'Es Admin'
+                        ),
+                        React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                            React.createElement('input', { 
+                                type: 'checkbox', 
+                                checked: newUser.receive_alerts, 
+                                onChange: e => setNewUser({...newUser, receive_alerts: e.target.checked}) 
+                            }),
+                            'Recibir Alertas'
+                        ),
+                        React.createElement('button', { onClick: handleCreate }, 'Crear Usuario')
                     )
                 ),
-                React.createElement('tbody', null,
-                    users.map(u => 
-                        React.createElement('tr', { key: u.id, style: { borderBottom: '1px solid #222' } },
-                            React.createElement('td', { style: { padding: 8 } }, u.id),
-                            React.createElement('td', { style: { padding: 8 } }, u.email),
-                            React.createElement('td', { style: { padding: 8 } }, u.name || '-'),
-                            React.createElement('td', { style: { padding: 8 } }, u.is_admin ? 'Admin' : 'User'),
-                            React.createElement('td', { style: { padding: 8 } }, u.receive_alerts ? 'Sí' : 'No'),
-                            React.createElement('td', { style: { padding: 8, display: 'flex', gap: 5 } },
-                                React.createElement('button', { 
-                                    style: { backgroundColor: '#3b82f6', fontSize: '0.8rem', padding: '4px 8px' },
-                                    onClick: () => setAssigningUser(u)
-                                }, 'Servidores'),
-                                React.createElement('button', { 
-                                    style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
-                                    onClick: () => handleDelete(u.id)
-                                }, 'Eliminar')
+                React.createElement('div', { className: 'card', style: { marginBottom: 40 } },
+                    React.createElement('div', { className: 'title' }, 'Usuarios Registrados'),
+                    loading ? 'Cargando...' : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
+                        React.createElement('thead', null,
+                            React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+                                React.createElement('th', { style: { padding: 8 } }, 'ID'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Email'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Rol'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Alertas'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Acciones')
+                            )
+                        ),
+                        React.createElement('tbody', null,
+                            users.map(u => 
+                                React.createElement('tr', { key: u.id, style: { borderBottom: '1px solid #222' } },
+                                    React.createElement('td', { style: { padding: 8 } }, u.id),
+                                    React.createElement('td', { style: { padding: 8 } }, u.email),
+                                    React.createElement('td', { style: { padding: 8 } }, u.name || '-'),
+                                    React.createElement('td', { style: { padding: 8 } }, u.is_admin ? 'Admin' : 'User'),
+                                    React.createElement('td', { style: { padding: 8 } }, u.receive_alerts ? 'Sí' : 'No'),
+                                    React.createElement('td', { style: { padding: 8, display: 'flex', gap: 5 } },
+                                        React.createElement('button', { 
+                                            style: { backgroundColor: '#3b82f6', fontSize: '0.8rem', padding: '4px 8px' },
+                                            onClick: () => setAssigningUser(u)
+                                        }, 'Servidores'),
+                                        React.createElement('button', { 
+                                            style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
+                                            onClick: () => handleDelete(u.id)
+                                        }, 'Eliminar')
+                                    )
+                                )
                             )
                         )
                     )
-                )
-            )
-        ),
+                ),
+                assigningUser && React.createElement(ServerAssignmentModal, { user: assigningUser, onClose: () => setAssigningUser(null) })
+            ),
 
-        React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
-            React.createElement('div', { className: 'title' }, 'Destinatarios de Alertas Extra'),
-            React.createElement('div', { className: 'muted', style: {marginBottom: 10} }, 'Personas adicionales que recibirán las alertas por correo.'),
-            React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
-                React.createElement('input', { 
-                    placeholder: 'Email', 
-                    value: newRecipient.email, 
-                    onChange: e => setNewRecipient({...newRecipient, email: e.target.value}) 
-                }),
-                React.createElement('input', { 
-                    placeholder: 'Nombre (Opcional)', 
-                    value: newRecipient.name, 
-                    onChange: e => setNewRecipient({...newRecipient, name: e.target.value}) 
-                }),
-                React.createElement('button', { onClick: handleCreateRecipient }, 'Añadir Destinatario')
-            )
-        ),
-
-        React.createElement('div', { className: 'card' },
-            React.createElement('div', { className: 'title' }, 'Lista de Destinatarios'),
-            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
-                React.createElement('thead', null,
-                    React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
-                        React.createElement('th', { style: { padding: 8 } }, 'ID'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Email'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
-                        React.createElement('th', { style: { padding: 8 } }, 'Acciones')
+            activeTab === 'recipients' && React.createElement(React.Fragment, null,
+                React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
+                    React.createElement('div', { className: 'title' }, 'Destinatarios de Alertas Extra'),
+                    React.createElement('div', { className: 'muted', style: {marginBottom: 10} }, 'Personas adicionales que recibirán las alertas por correo.'),
+                    React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
+                        React.createElement('input', { 
+                            placeholder: 'Email', 
+                            value: newRecipient.email, 
+                            onChange: e => setNewRecipient({...newRecipient, email: e.target.value}) 
+                        }),
+                        React.createElement('input', { 
+                            placeholder: 'Nombre (Opcional)', 
+                            value: newRecipient.name, 
+                            onChange: e => setNewRecipient({...newRecipient, name: e.target.value}) 
+                        }),
+                        React.createElement('button', { onClick: handleCreateRecipient }, 'Añadir Destinatario')
                     )
                 ),
-                React.createElement('tbody', null,
-                    recipients.map(r => 
-                        React.createElement('tr', { key: r.id, style: { borderBottom: '1px solid #222' } },
-                            React.createElement('td', { style: { padding: 8 } }, r.id),
-                            React.createElement('td', { style: { padding: 8 } }, r.email),
-                            React.createElement('td', { style: { padding: 8 } }, r.name || '-'),
-                            React.createElement('td', { style: { padding: 8 } },
-                                React.createElement('button', { 
-                                    style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
-                                    onClick: () => handleDeleteRecipient(r.id)
-                                }, 'Eliminar')
+                React.createElement('div', { className: 'card' },
+                    React.createElement('div', { className: 'title' }, 'Lista de Destinatarios'),
+                    React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', color: '#fff' } },
+                        React.createElement('thead', null,
+                            React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+                                React.createElement('th', { style: { padding: 8 } }, 'ID'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Email'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Acciones')
+                            )
+                        ),
+                        React.createElement('tbody', null,
+                            recipients.map(r => 
+                                React.createElement('tr', { key: r.id, style: { borderBottom: '1px solid #222' } },
+                                    React.createElement('td', { style: { padding: 8 } }, r.id),
+                                    React.createElement('td', { style: { padding: 8 } }, r.email),
+                                    React.createElement('td', { style: { padding: 8 } }, r.name || '-'),
+                                    React.createElement('td', { style: { padding: 8 } },
+                                        React.createElement('button', { 
+                                            style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
+                                            onClick: () => handleDeleteRecipient(r.id)
+                                        }, 'Eliminar')
+                                    )
+                                )
                             )
                         )
                     )
@@ -689,15 +1027,20 @@ function App() {
   };
 
   const handleUpdateInterval = async (serverId, val) => {
+    const newVal = parseInt(val);
+    // Optimistic update
+    setServers(servers.map(s => s.server_id === serverId ? { ...s, report_interval: newVal } : s));
+
     try {
         await fetchJSON(`/api/admin/servers/${serverId}/config`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_interval: parseInt(val) })
+            body: JSON.stringify({ report_interval: newVal })
         });
-        load(); // Reload to update state
+        // Success
     } catch (e) {
         alert('Error actualizando intervalo: ' + e.message);
+        load(); // Revert
     }
   };
 
@@ -764,6 +1107,7 @@ function App() {
       { label: 'Tiempo Real (10s)', value: 10 },
       { label: '5 Minutos', value: 300 },
       { label: '30 Minutos', value: 1800 },
+      { label: '40 Minutos (Default)', value: 2400 },
       { label: '1 Hora', value: 3600 },
       { label: '24 Horas', value: 86400 },
   ];
@@ -782,6 +1126,9 @@ function App() {
           servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, s.server_id))
         ),
         React.createElement('button', { onClick: () => setShowChooser(v => !v) }, 'Cambiar servidor'),
+        selected && React.createElement('div', { style: { marginLeft: 10, padding: '4px 8px', background: '#334155', borderRadius: 4, fontSize: '0.8rem' } },
+            `ID: ${selected}`
+        ),
         
         React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
             React.createElement('span', { className: 'muted' }, 'Intervalo:'),

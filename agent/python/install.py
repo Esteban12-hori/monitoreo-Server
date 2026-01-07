@@ -172,12 +172,13 @@ def main():
             preset_server = preset["server"]
             preset_verify = preset["verify"] or default_verify
 
-        server = prompt_with_default("URL del backend", preset_server) 
+        server = prompt_with_default("URL del servidor de monitoreo (donde se envían los datos)", preset_server) 
         while not validate_url(server):
-            print("URL inválida. Ej: https://monitoreo.tu-dominio.com")
-            server = input("URL del backend: ").strip()
+            print("URL inválida. Debe comenzar con http:// o https://")
+            print("Ejemplo: http://20.153.165.55 o https://monitoreo.tu-dominio.com")
+            server = input("URL del servidor: ").strip()
 
-        server_id = prompt_with_default("Identificador del servidor", default_id)
+        server_id = prompt_with_default("Nombre/ID de este servidor (ej: servidor-produccion)", default_id)
         token = prompt_with_default("Token de autenticación", default_token)
         interval_str = prompt_with_default("Intervalo de envío (seg)", str(args.interval))
         try:
