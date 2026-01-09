@@ -1073,7 +1073,10 @@ function App() {
   // HEADER COMUN
   const renderHeader = () => (
       React.createElement('div', { className: 'header' },
-        React.createElement('div', { className: 'title' }, 'Dashboard de Monitoreo'),
+        React.createElement('div', { className: 'title', style: { display: 'flex', alignItems: 'center', gap: '12px' } },
+            React.createElement('img', { src: 'assets/logo.png', alt: 'ServPulse', style: { height: '32px', width: 'auto' } }),
+            'ServPulse'
+        ),
         React.createElement('span', { className: 'pill' }, demo ? 'DEMO' : 'LIVE'),
         !demo && React.createElement('div', { style: { display: 'flex', gap: 10, marginLeft: 20 } },
             React.createElement('button', { 
