@@ -1074,7 +1074,14 @@ function App() {
   const renderHeader = () => (
       React.createElement('div', { className: 'header' },
         React.createElement('div', { className: 'title', style: { display: 'flex', alignItems: 'center', gap: '12px' } },
-            React.createElement('img', { src: 'assets/logo.svg', alt: 'Logo', style: { height: '40px', width: 'auto' } }),
+            React.createElement('div', { 
+                style: { 
+                    height: '40px', 
+                    width: '40px', 
+                    background: `url("assets/logo.svg") center/contain no-repeat`,
+                    filter: 'drop-shadow(0 0 4px rgba(56, 189, 248, 0.5))'
+                }
+            }),
             'ServPulse'
         ),
         React.createElement('span', { className: 'pill' }, demo ? 'DEMO' : 'LIVE'),
