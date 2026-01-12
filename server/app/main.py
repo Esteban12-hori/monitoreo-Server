@@ -422,6 +422,29 @@ def delete_alert_recipient(recipient_id: int, user: dict = Depends(require_admin
         return {"status": "deleted"}
 
 
+@app.post("/api/admin/test-email")
+def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
+    """
+    Endpoint para probar la configuración de correo.
+    Envía un correo de prueba al destinatario especificado.
+    """
+    try:
+        # Usamos send_alert_email con datos simulados
+        send_alert_email(
+            server_id="TEST-SERVER",
+            alert_type="PRUEBA DE CORREO",
+            current_value=100.0,
+            threshold=50.0,
+            extra_recipients=[payload.email],
+            full_metrics={}
+        )
+        return {"status": "sent", "message": f"Correo de prueba enviado a {payload.email}"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error enviando correo: {str(e)}")
+
+
 # --- Reglas de Alerta y Grupos ---
 
 @app.get("/api/admin/alert-rules", response_model=List[AlertRuleResponse])

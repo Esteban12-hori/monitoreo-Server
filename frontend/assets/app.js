@@ -514,6 +514,10 @@ function AlertRulesManager() {
     const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', emails: '' });
     const [filterGroup, setFilterGroup] = useState('');
     
+    // Test Email State
+    const [testEmail, setTestEmail] = useState('');
+    const [sendingTest, setSendingTest] = useState(false);
+
     const load = async () => {
         try {
             const [rData, sData] = await Promise.all([
@@ -558,12 +562,47 @@ function AlertRulesManager() {
         load();
     };
 
+    const handleTestEmail = async () => {
+        if (!testEmail || !testEmail.includes('@')) return alert('Ingrese un email válido');
+        setSendingTest(true);
+        try {
+            const res = await fetchJSON('/api/admin/test-email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: testEmail, name: 'Test User' })
+            });
+            alert(res.message);
+        } catch (e) {
+            alert('Error enviando prueba: ' + e.message);
+        } finally {
+            setSendingTest(false);
+        }
+    };
+
     return React.createElement('div', { className: 'card', style: { marginBottom: 20 } },
         React.createElement('div', { className: 'title' }, 'Reglas de Alerta Avanzadas'),
         
+        // Test Email Section
+        React.createElement('div', { style: { marginBottom: 20, padding: 15, background: '#0f172a', borderRadius: 6, border: '1px solid #334155' } },
+            React.createElement('div', { style: { fontWeight: 600, marginBottom: 10, color: '#38bdf8' } }, 'Prueba de Configuración de Correo'),
+            React.createElement('div', { style: { display: 'flex', gap: 10 } },
+                React.createElement('input', {
+                    placeholder: 'Email para prueba',
+                    value: testEmail,
+                    onChange: e => setTestEmail(e.target.value),
+                    style: { flex: 1, padding: '8px 12px', borderRadius: 4, border: '1px solid #475569', background: '#1e293b', color: '#fff' }
+                }),
+                React.createElement('button', {
+                    onClick: handleTestEmail,
+                    disabled: sendingTest,
+                    style: { padding: '8px 16px', background: sendingTest ? '#94a3b8' : '#22c55e', color: 'white', border: 'none', borderRadius: 4, cursor: sendingTest ? 'wait' : 'pointer' }
+                }, sendingTest ? 'Enviando...' : 'Enviar Prueba')
+            )
+        ),
+
         React.createElement('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginBottom: 20, padding: 10, background: '#1e293b', borderRadius: 6 } },
             React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}), style: { padding: 8, background: '#333', color: '#fff', border: 'none' } },
-                ['cpu', 'memory', 'disk'].map(t => React.createElement('option', { key: t, value: t }, t.toUpperCase()))
+                ['cpu', 'memory', 'disk', 'offline'].map(t => React.createElement('option', { key: t, value: t }, t.toUpperCase()))
             ),
             React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}), style: { padding: 8, background: '#333', color: '#fff', border: 'none' } },
                 React.createElement('option', { value: 'global' }, 'Global'),
@@ -829,6 +868,8 @@ function ThresholdManager() {
         )
     );
 }
+
+
 
 function AdminPanel() {
     const [activeTab, setActiveTab] = useState('users');
