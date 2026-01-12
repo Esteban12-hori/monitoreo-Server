@@ -63,6 +63,12 @@ class UserCreateSchema(BaseModel):
     is_admin: bool = False
     receive_alerts: bool = False
 
+class UserUpdateSchema(BaseModel):
+    name: Optional[str] = None
+    is_admin: Optional[bool] = None
+    receive_alerts: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=6)
+
 class UserResponseSchema(BaseModel):
     id: int
     email: str

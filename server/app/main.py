@@ -25,7 +25,8 @@ from .schemas import (
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
-    ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport
+    ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
+    UserUpdateSchema
 )
 from .email_utils import send_alert_email
 import time
@@ -261,7 +262,8 @@ def create_user(payload: UserCreateSchema, user: dict = Depends(require_admin)):
             email=payload.email,
             password_hash=get_password_hash(payload.password),
             name=payload.name,
-            is_admin=payload.is_admin
+            is_admin=payload.is_admin,
+            receive_alerts=payload.receive_alerts
         )
         sess.add(new_user)
         sess.commit()
@@ -280,6 +282,29 @@ def delete_user(user_id: int, user: dict = Depends(require_admin)):
         sess.delete(u)
         sess.commit()
         return {"status": "deleted"}
+
+@app.put("/api/admin/users/{user_id}", response_model=UserResponseSchema)
+def update_user(user_id: int, payload: UserUpdateSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        u = sess.get(User, user_id)
+        if not u:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        if payload.name is not None:
+            u.name = payload.name
+        if payload.is_admin is not None:
+            # Evitar quitarse admin a sí mismo
+            if user_id == user["user_id"] and payload.is_admin is False:
+                raise HTTPException(status_code=400, detail="No puedes quitarte privilegios de administrador a ti mismo")
+            u.is_admin = payload.is_admin
+        if payload.receive_alerts is not None:
+            u.receive_alerts = payload.receive_alerts
+        if payload.password is not None:
+            u.password_hash = get_password_hash(payload.password)
+            
+        sess.commit()
+        sess.refresh(u)
+        return u
 
 @app.post("/api/admin/users/{user_id}/servers")
 def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: dict = Depends(require_admin)):

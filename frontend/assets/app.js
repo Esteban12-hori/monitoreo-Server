@@ -871,6 +871,92 @@ function ThresholdManager() {
 
 
 
+function UserEditModal({ user, onClose }) {
+    const [values, setValues] = useState({ 
+        name: user.name || '', 
+        is_admin: user.is_admin, 
+        receive_alerts: user.receive_alerts,
+        password: '' 
+    });
+    const [loading, setLoading] = useState(false);
+
+    const handleSave = async () => {
+        setLoading(true);
+        try {
+            const payload = {
+                name: values.name,
+                is_admin: values.is_admin,
+                receive_alerts: values.receive_alerts
+            };
+            if (values.password && values.password.length >= 6) {
+                payload.password = values.password;
+            }
+
+            await fetchJSON(`/api/admin/users/${user.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            onClose();
+        } catch (e) {
+            alert('Error actualizando usuario: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return React.createElement('div', { 
+        style: { 
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 
+        } 
+    },
+        React.createElement('div', { className: 'card', style: { width: 400 } },
+            React.createElement('div', { className: 'title' }, `Editar Usuario ${user.email}`),
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 15 } },
+                React.createElement('div', null,
+                    React.createElement('label', { style: { display: 'block', marginBottom: 5, color: '#94a3b8' } }, 'Nombre'),
+                    React.createElement('input', { 
+                        value: values.name, 
+                        onChange: e => setValues({...values, name: e.target.value}),
+                        style: { width: '100%', padding: 8, background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4 }
+                    })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { style: { display: 'block', marginBottom: 5, color: '#94a3b8' } }, 'Nueva Contraseña (opcional)'),
+                    React.createElement('input', { 
+                        type: 'password',
+                        placeholder: 'Dejar en blanco para no cambiar',
+                        value: values.password, 
+                        onChange: e => setValues({...values, password: e.target.value}),
+                        style: { width: '100%', padding: 8, background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4 }
+                    })
+                ),
+                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                    React.createElement('input', { 
+                        type: 'checkbox', 
+                        checked: values.is_admin, 
+                        onChange: e => setValues({...values, is_admin: e.target.checked}) 
+                    }),
+                    'Es Admin'
+                ),
+                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                    React.createElement('input', { 
+                        type: 'checkbox', 
+                        checked: values.receive_alerts, 
+                        onChange: e => setValues({...values, receive_alerts: e.target.checked}) 
+                    }),
+                    'Recibir Alertas'
+                ),
+                React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 } },
+                    React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
+                    React.createElement('button', { onClick: handleSave, disabled: loading }, loading ? 'Guardando...' : 'Guardar')
+                )
+            )
+        )
+    );
+}
+
 function AdminPanel() {
     const [activeTab, setActiveTab] = useState('users');
     const [users, setUsers] = useState([]);
@@ -880,6 +966,7 @@ function AdminPanel() {
     const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false });
     const [newRecipient, setNewRecipient] = useState({ email: '', name: '' });
     const [assigningUser, setAssigningUser] = useState(null);
+    const [editingUser, setEditingUser] = useState(null);
 
     const loadUsers = async () => {
         setLoading(true);
@@ -1078,7 +1165,8 @@ function AdminPanel() {
                         )
                     )
                 ),
-                assigningUser && React.createElement(ServerAssignmentModal, { user: assigningUser, onClose: () => setAssigningUser(null) })
+                assigningUser && React.createElement(ServerAssignmentModal, { user: assigningUser, onClose: () => setAssigningUser(null) }),
+                editingUser && React.createElement(UserEditModal, { user: editingUser, onClose: () => { setEditingUser(null); loadUsers(); } })
             ),
 
             activeTab === 'recipients' && React.createElement(React.Fragment, null,
