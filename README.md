@@ -16,7 +16,7 @@ Este proyecto es una solución completa para el monitoreo de servidores en tiemp
 
 ---
 
-## 📂 Estructura del Proyecto
+        ## 📂 Estructura del Proyecto
 
 ```
 monitoreo-Server-main/
@@ -233,7 +233,27 @@ Para que el agente se ejecute automáticamente al iniciar el sistema y funcione 
 
 ---
 
-### 🔄 Actualización sin Caídas (Zero-Downtime Deployment)
+### 🔄 Actualización Automatizada
+
+Para actualizar el servidor a la última versión (incluyendo cambios de base de datos y reinicio de servicios), hemos incluido scripts de automatización que minimizan el tiempo de inactividad.
+
+**En Linux:**
+```bash
+./update_prod.sh
+```
+
+**En Windows (PowerShell):**
+```powershell
+.\update_prod.ps1
+```
+
+Estos scripts realizan automáticamente:
+1. `git pull` (descarga cambios)
+2. Instalación de dependencias Python
+3. Migraciones de base de datos (`migrate_v3.py` para nuevas tablas/columnas)
+4. Reinicio del servicio backend
+
+### 🔄 Actualización sin Caídas (Zero-Downtime Deployment) - Manual
 
 Si estás ejecutando el servidor en producción con **Linux y Systemd** (usando la configuración recomendada con Gunicorn), puedes actualizar el código sin detener el servicio ni desconectar a los usuarios activos.
 
