@@ -396,6 +396,13 @@ def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
             except:
                 pass
                 
+    # 3. Assigned Users
+    # srv is a Server object, which has 'assigned_users' relationship
+    if srv.assigned_users:
+        for u in srv.assigned_users:
+            if u.receive_alerts and u.email:
+                recipients.append(u.email)
+
     return list(set(recipients)), applied_rules
 
 @app.post("/api/admin/recipients", response_model=AlertRecipientSchema)

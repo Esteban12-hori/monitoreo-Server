@@ -1132,6 +1132,113 @@ function AdminPanel() {
     );
 }
 
+function ThresholdModal({ serverId, onClose }) {
+    const [values, setValues] = useState({ cpu: '', memory: '', disk: '' });
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        const load = async () => {
+            try {
+                const t = await fetchJSON(`/api/umbrales/${serverId}`);
+                setValues({
+                    cpu: t?.cpu_threshold ?? '',
+                    memory: t?.memory_threshold ?? '',
+                    disk: t?.disk_threshold ?? ''
+                });
+            } catch (e) {
+                console.error(e);
+            } finally {
+                setLoading(false);
+            }
+        };
+        load();
+    }, [serverId]);
+
+    const handleSave = async () => {
+        setError('');
+        const v = {};
+        const validate = (val, name) => {
+            if (val === '' || val === null || val === undefined) return undefined;
+            const n = parseFloat(val);
+            if (isNaN(n) || n < 0.1 || n > 100) return `Error en ${name}: 0.1 - 100`;
+            return n;
+        };
+
+        const cpu = validate(values.cpu, 'CPU');
+        if (typeof cpu === 'string') { setError(cpu); return; }
+        if (cpu !== undefined) v.cpu_threshold = cpu;
+
+        const mem = validate(values.memory, 'Memoria');
+        if (typeof mem === 'string') { setError(mem); return; }
+        if (mem !== undefined) v.memory_threshold = mem;
+
+        const disk = validate(values.disk, 'Disco');
+        if (typeof disk === 'string') { setError(disk); return; }
+        if (disk !== undefined) v.disk_threshold = disk;
+
+        try {
+            await fetchJSON(`/api/umbrales/${serverId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(v)
+            });
+            alert('Umbrales actualizados');
+            onClose();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    };
+
+    return React.createElement('div', { 
+        style: { 
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+            background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 
+        } 
+    },
+        React.createElement('div', { className: 'card', style: { width: 400 } },
+            React.createElement('div', { className: 'title' }, `Umbrales para ${serverId}`),
+            loading ? 'Cargando...' : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 15 } },
+                React.createElement('div', null,
+                    React.createElement('label', { style: { display: 'block', marginBottom: 5, color: '#94a3b8' } }, 'CPU (%)'),
+                    React.createElement('input', { 
+                        type: 'number', step: '0.1', 
+                        value: values.cpu, 
+                        onChange: e => setValues({...values, cpu: e.target.value}),
+                        placeholder: 'Global',
+                        style: { width: '100%', padding: 8, background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4 }
+                    })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { style: { display: 'block', marginBottom: 5, color: '#94a3b8' } }, 'Memoria (%)'),
+                    React.createElement('input', { 
+                        type: 'number', step: '0.1', 
+                        value: values.memory, 
+                        onChange: e => setValues({...values, memory: e.target.value}),
+                        placeholder: 'Global',
+                        style: { width: '100%', padding: 8, background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4 }
+                    })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { style: { display: 'block', marginBottom: 5, color: '#94a3b8' } }, 'Disco (%)'),
+                    React.createElement('input', { 
+                        type: 'number', step: '0.1', 
+                        value: values.disk, 
+                        onChange: e => setValues({...values, disk: e.target.value}),
+                        placeholder: 'Global',
+                        style: { width: '100%', padding: 8, background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4 }
+                    })
+                ),
+                error && React.createElement('div', { style: { color: '#ef4444' } }, error),
+                React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 } },
+                    React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
+                    React.createElement('button', { onClick: handleSave }, 'Guardar')
+                )
+            )
+        )
+    );
+}
+
 function App() {
   const { demo } = useQuery();
   const apiBase = getApiBase();
@@ -1150,6 +1257,7 @@ function App() {
   const [alerts, setAlerts] = useState({ cpu_total_percent: 90, memory_used_percent: 90, disk_used_percent: 90 });
   const [status, setStatus] = useState({ ok: true, message: '' });
   const [showChooser, setShowChooser] = useState(false);
+  const [editingThresholdsServerId, setEditingThresholdsServerId] = useState(null);
 
   const load = async () => {
     const token = getDashboardToken();
@@ -1383,6 +1491,10 @@ function App() {
         selected && React.createElement('div', { style: { marginLeft: 10, padding: '4px 8px', background: '#334155', borderRadius: 4, fontSize: '0.8rem' } },
             `ID: ${selected}`
         ),
+        selected && React.createElement('button', { 
+            onClick: () => setEditingThresholdsServerId(selected),
+            style: { marginLeft: 10, padding: '4px 8px', background: '#3b82f6', borderRadius: 4, fontSize: '0.8rem', border: 'none', color: 'white', cursor: 'pointer' } 
+        }, 'Umbrales'),
         
         React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 } },
             React.createElement('span', { className: 'muted' }, 'Intervalo:'),
@@ -1460,7 +1572,11 @@ function App() {
         AlertInput('cpu_total_percent', 'Alerta CPU total'),
         AlertInput('memory_used_percent', 'Alerta memoria usada'),
         AlertInput('disk_used_percent', 'Alerta disco usado')
-      )
+      ),
+      editingThresholdsServerId && React.createElement(ThresholdModal, { 
+          serverId: editingThresholdsServerId, 
+          onClose: () => setEditingThresholdsServerId(null) 
+      })
     )
   );
 }
