@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Table
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship, backref
 from sqlalchemy.sql import func
 
 Base = declarative_base()
@@ -93,3 +93,29 @@ class UserSession(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     user = relationship("User")
+
+
+class ServerThreshold(Base):
+    __tablename__ = "server_thresholds"
+    id = Column(Integer, primary_key=True)
+    server_id = Column(String(255), ForeignKey('servers.server_id'), unique=True, nullable=False)
+    
+    cpu_threshold = Column(Float, nullable=True)     # %
+    memory_threshold = Column(Float, nullable=True)  # %
+    disk_threshold = Column(Float, nullable=True)    # %
+    
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Relationship to Server
+    server = relationship("Server", backref=backref("threshold", uselist=False, cascade="all, delete-orphan"))
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True)
+    action = Column(String(255), nullable=False)
+    target_type = Column(String(50), nullable=False) # e.g. 'threshold', 'user'
+    target_id = Column(String(255), nullable=True)
+    changes = Column(Text, nullable=True) # JSON details
+    user_email = Column(String(255), nullable=True) # Who did it
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())

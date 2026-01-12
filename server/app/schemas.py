@@ -119,3 +119,32 @@ class ServerUpdateGroupSchema(BaseModel):
     group_name: Optional[str]
 
 
+class ServerThresholdBase(BaseModel):
+    cpu_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+    memory_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+    disk_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+
+class ServerThresholdUpdate(ServerThresholdBase):
+    pass
+
+class ServerThresholdImport(ServerThresholdBase):
+    server_id: str
+
+class ServerThresholdResponse(ServerThresholdBase):
+    server_id: str
+    updated_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+class AuditLogResponse(BaseModel):
+    id: int
+    action: str
+    target_type: str
+    target_id: Optional[str]
+    changes: Optional[str]
+    user_email: Optional[str]
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True

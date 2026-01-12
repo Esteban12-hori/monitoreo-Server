@@ -19,12 +19,13 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
-    ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema
+    ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
+    ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport
 )
 from .email_utils import send_alert_email
 import time
@@ -143,6 +144,9 @@ def startup():
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
 _cache_order: dict[str, int] = {}
+
+# Caché de umbrales: server_id -> {cpu_threshold, memory_threshold, disk_threshold}
+_threshold_cache: dict[str, dict] = {}
 
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
@@ -364,7 +368,35 @@ def update_server_config(server_id: str, payload: ServerConfigUpdateSchema, user
 def list_alert_recipients(user: dict = Depends(require_admin)):
     with Session(engine) as sess:
         recipients = sess.execute(select(AlertRecipient)).scalars().all()
-        return recipients
+    return recipients
+
+def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
+    # 1. Default recipients
+    recipients = [r.email for r in sess.execute(select(AlertRecipient)).scalars().all()]
+    
+    # 2. Alert Rules
+    rules = sess.execute(select(AlertRule).where(AlertRule.alert_type == alert_type)).scalars().all()
+    applied_rules = []
+    
+    for rule in rules:
+        match = False
+        if rule.server_scope == 'global':
+            match = True
+        elif rule.server_scope == 'server' and rule.target_id == srv.server_id:
+            match = True
+        elif rule.server_scope == 'group' and rule.target_id == srv.group_name:
+            match = True
+            
+        if match:
+            applied_rules.append(rule.id)
+            try:
+                rule_emails = json.loads(rule.emails)
+                if isinstance(rule_emails, list):
+                    recipients.extend(rule_emails)
+            except:
+                pass
+                
+    return list(set(recipients)), applied_rules
 
 @app.post("/api/admin/recipients", response_model=AlertRecipientSchema)
 def create_alert_recipient(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
@@ -455,6 +487,121 @@ def update_server_group(server_id: str, payload: ServerUpdateGroupSchema, user: 
         return {"status": "updated", "group_name": srv.group_name}
 
 
+def log_audit(sess: Session, action: str, target_type: str, target_id: str, changes: dict, user_email: str):
+    log_entry = AuditLog(
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        changes=json.dumps(changes) if changes else None,
+        user_email=user_email
+    )
+    sess.add(log_entry)
+
+
+# --- Gestión de Umbrales (Thresholds) ---
+
+@app.get("/api/umbrales", response_model=List[ServerThresholdResponse])
+def list_thresholds(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        thresholds = sess.execute(select(ServerThreshold)).scalars().all()
+        return thresholds
+
+@app.get("/api/umbrales/{server_id}", response_model=ServerThresholdResponse)
+def get_threshold(server_id: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        t = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == server_id)).scalar_one_or_none()
+        if not t:
+            # Si no existe, devolver uno vacío con el server_id
+            return ServerThresholdResponse(server_id=server_id, cpu_threshold=None, memory_threshold=None, disk_threshold=None, updated_at=None)
+        return t
+
+@app.put("/api/umbrales/{server_id}", response_model=ServerThresholdResponse)
+def update_threshold(server_id: str, payload: ServerThresholdUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        # Check if server exists
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+             raise HTTPException(status_code=404, detail="Servidor no encontrado")
+             
+        t = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == server_id)).scalar_one_or_none()
+        
+        changes = {}
+        if not t:
+            t = ServerThreshold(server_id=server_id)
+            sess.add(t)
+            changes["created"] = True
+            
+        if payload.cpu_threshold is not None:
+            changes["cpu_threshold"] = {"old": t.cpu_threshold, "new": payload.cpu_threshold}
+            t.cpu_threshold = payload.cpu_threshold
+            
+        if payload.memory_threshold is not None:
+            changes["memory_threshold"] = {"old": t.memory_threshold, "new": payload.memory_threshold}
+            t.memory_threshold = payload.memory_threshold
+            
+        if payload.disk_threshold is not None:
+            changes["disk_threshold"] = {"old": t.disk_threshold, "new": payload.disk_threshold}
+            t.disk_threshold = payload.disk_threshold
+            
+        # Log Audit
+        log_audit(sess, "update", "threshold", server_id, changes, user["email"])
+        
+        sess.commit()
+        sess.refresh(t)
+        
+        # Update Cache
+        _threshold_cache[server_id] = {
+            "cpu": t.cpu_threshold,
+            "memory": t.memory_threshold,
+            "disk": t.disk_threshold
+        }
+        
+        return t
+
+@app.get("/api/umbrales/export", response_model=List[ServerThresholdResponse])
+def export_thresholds(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        thresholds = sess.execute(select(ServerThreshold)).scalars().all()
+        return thresholds
+
+@app.post("/api/umbrales/import")
+def import_thresholds(payload: List[ServerThresholdImport], user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        count = 0
+        for item in payload:
+            # Validate server exists
+            srv = sess.execute(select(Server).where(Server.server_id == item.server_id)).scalar_one_or_none()
+            if not srv:
+                continue 
+            
+            t = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == item.server_id)).scalar_one_or_none()
+            if not t:
+                t = ServerThreshold(server_id=item.server_id)
+                sess.add(t)
+            
+            t.cpu_threshold = item.cpu_threshold
+            t.memory_threshold = item.memory_threshold
+            t.disk_threshold = item.disk_threshold
+            
+            # Update cache immediately
+            _threshold_cache[item.server_id] = {
+                "cpu": t.cpu_threshold,
+                "memory": t.memory_threshold,
+                "disk": t.disk_threshold
+            }
+            count += 1
+        
+        log_audit(sess, "import", "threshold", "bulk", {"count": count}, user["email"])
+        sess.commit()
+        return {"status": "imported", "count": count}
+
+@app.get("/api/audit-logs", response_model=List[AuditLogResponse])
+def list_audit_logs(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        logs = sess.execute(select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(100)).scalars().all()
+        return logs
+
+
 @app.post("/api/metrics")
 def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = Header(None)):
     if not x_auth_token:
@@ -495,48 +642,76 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
 
         # Verificar Alertas
         try:
-            # Cargar configuración de alertas
+            # Cargar configuración de alertas global
             alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
             
-            if alert_cfg:
-                # Datos completos para el correo
-                full_metrics = payload.model_dump()
-
-                current_time = time.time()
+            # Cargar umbrales específicos (con caché)
+            thresholds = _threshold_cache.get(payload.server_id)
+            if thresholds is None:
+                # Si no está en caché, buscar en DB
+                t_db = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == payload.server_id)).scalar_one_or_none()
+                if t_db:
+                    thresholds = {
+                        "cpu": t_db.cpu_threshold,
+                        "memory": t_db.memory_threshold,
+                        "disk": t_db.disk_threshold
+                    }
+                else:
+                    thresholds = {}
+                _threshold_cache[payload.server_id] = thresholds
+            
+            # Definir límites efectivos (Global vs Específico)
+            # Prioridad: Específico > Global
+            
+            cpu_limit = thresholds.get("cpu")
+            if cpu_limit is None and alert_cfg:
+                cpu_limit = alert_cfg.cpu_total_percent
                 
-                # Check CPU
-                if alert_cfg.cpu_total_percent > 0 and payload.cpu.total >= alert_cfg.cpu_total_percent:
-                    key = (payload.server_id, "cpu")
-                    last_sent = _alert_state.get(key, 0)
-                    if current_time - last_sent > ALERT_COOLDOWN:
-                        recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
-                        print(f"[ALERT] Sending CPU alert for {srv.server_id}. Applied rules: {applied_rules}")
-                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, alert_cfg.cpu_total_percent, recipients, full_metrics)
-                        _alert_state[key] = current_time
-                        
-                # Check Memory
-                mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
-                if alert_cfg.memory_used_percent > 0 and mem_percent >= alert_cfg.memory_used_percent:
-                    key = (payload.server_id, "memory")
-                    last_sent = _alert_state.get(key, 0)
-                    if current_time - last_sent > ALERT_COOLDOWN:
-                        recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
-                        print(f"[ALERT] Sending Memory alert for {srv.server_id}. Applied rules: {applied_rules}")
-                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, alert_cfg.memory_used_percent, recipients, full_metrics)
-                        _alert_state[key] = current_time
+            mem_limit = thresholds.get("memory")
+            if mem_limit is None and alert_cfg:
+                mem_limit = alert_cfg.memory_used_percent
+                
+            disk_limit = thresholds.get("disk")
+            if disk_limit is None and alert_cfg:
+                disk_limit = alert_cfg.disk_used_percent
 
-                # Check Disk
-                if alert_cfg.disk_used_percent > 0 and payload.disk.percent >= alert_cfg.disk_used_percent:
-                    key = (payload.server_id, "disk")
-                    last_sent = _alert_state.get(key, 0)
-                    if current_time - last_sent > ALERT_COOLDOWN:
-                        recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
-                        print(f"[ALERT] Sending Disk alert for {srv.server_id}. Applied rules: {applied_rules}")
-                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, alert_cfg.disk_used_percent, recipients, full_metrics)
-                        _alert_state[key] = current_time
+            # Datos completos para el correo
+            full_metrics = payload.model_dump()
+            current_time = time.time()
+            
+            # Check CPU
+            if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
+                key = (payload.server_id, "cpu")
+                last_sent = _alert_state.get(key, 0)
+                if current_time - last_sent > ALERT_COOLDOWN:
+                    recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
+                    print(f"[ALERT] Sending CPU alert for {srv.server_id}. Threshold: {cpu_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                    send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, cpu_limit, recipients, full_metrics)
+                    _alert_state[key] = current_time
+            
+            # Check Memory
+            mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
+            if mem_limit and mem_limit > 0 and mem_percent >= mem_limit:
+                key = (payload.server_id, "memory")
+                last_sent = _alert_state.get(key, 0)
+                if current_time - last_sent > ALERT_COOLDOWN:
+                    recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
+                    print(f"[ALERT] Sending Memory alert for {srv.server_id}. Threshold: {mem_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                    send_alert_email(payload.server_id, "Memoria Alta", mem_percent, mem_limit, recipients, full_metrics)
+                    _alert_state[key] = current_time
+
+            # Check Disk
+            if disk_limit and disk_limit > 0 and payload.disk.percent >= disk_limit:
+                key = (payload.server_id, "disk")
+                last_sent = _alert_state.get(key, 0)
+                if current_time - last_sent > ALERT_COOLDOWN:
+                    recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
+                    print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                    send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
+                    _alert_state[key] = current_time
 
         except Exception as e:
-            print(f"Error verificando alertas: {e}")
+            print(f"Error checking alerts: {e}")
 
         # Actualizar caché en memoria
         try:

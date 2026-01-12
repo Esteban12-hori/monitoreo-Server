@@ -1,5 +1,7 @@
 const { useEffect, useState, useRef } = React;
 
+// v10 - Fix potential cache issues
+
 // Token del dashboard solo desde localStorage (emitido por login)
 function getDashboardToken() {
   const token = localStorage.getItem('dashboard_token') || '';
@@ -629,6 +631,205 @@ function AlertRulesManager() {
     );
 }
 
+function ThresholdRow({ server, threshold, onSave }) {
+    const [editing, setEditing] = useState(false);
+    const [values, setValues] = useState({
+        cpu: threshold?.cpu_threshold ?? '',
+        memory: threshold?.memory_threshold ?? '',
+        disk: threshold?.disk_threshold ?? ''
+    });
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        setValues({
+            cpu: threshold?.cpu_threshold ?? '',
+            memory: threshold?.memory_threshold ?? '',
+            disk: threshold?.disk_threshold ?? ''
+        });
+        setError('');
+    }, [threshold]);
+
+    const handleSave = () => {
+        setError('');
+        const v = {};
+        
+        const validate = (val, name) => {
+            if (val === '' || val === null || val === undefined) return undefined;
+            const n = parseFloat(val);
+            if (isNaN(n) || n < 0.1 || n > 100) {
+                return `Error en ${name}: debe ser 0.1 - 100`;
+            }
+            return n;
+        };
+
+        const cpu = validate(values.cpu, 'CPU');
+        if (typeof cpu === 'string') { setError(cpu); return; }
+        if (cpu !== undefined) v.cpu_threshold = cpu;
+
+        const mem = validate(values.memory, 'Memoria');
+        if (typeof mem === 'string') { setError(mem); return; }
+        if (mem !== undefined) v.memory_threshold = mem;
+
+        const disk = validate(values.disk, 'Disco');
+        if (typeof disk === 'string') { setError(disk); return; }
+        if (disk !== undefined) v.disk_threshold = disk;
+        
+        onSave(server.server_id, v);
+        setEditing(false);
+    };
+
+    if (editing) {
+        return React.createElement('tr', { style: { background: '#1e293b' } },
+            React.createElement('td', { style: { padding: 12 } }, 
+                React.createElement('div', null, server.server_id),
+                error && React.createElement('div', { style: { color: '#ef4444', fontSize: '0.7rem', marginTop: 4 } }, error)
+            ),
+            React.createElement('td', { style: { padding: 12 } }, 
+                React.createElement('input', { type: 'number', step: '0.1', value: values.cpu, onChange: e => setValues({...values, cpu: e.target.value}), placeholder: 'Global', style: { width: 70, padding: 6, background: '#0f172a', color: '#fff', border: error.includes('CPU') ? '1px solid #ef4444' : '1px solid #475569', borderRadius: 4 } })
+            ),
+            React.createElement('td', { style: { padding: 12 } }, 
+                React.createElement('input', { type: 'number', step: '0.1', value: values.memory, onChange: e => setValues({...values, memory: e.target.value}), placeholder: 'Global', style: { width: 70, padding: 6, background: '#0f172a', color: '#fff', border: error.includes('Memoria') ? '1px solid #ef4444' : '1px solid #475569', borderRadius: 4 } })
+            ),
+            React.createElement('td', { style: { padding: 12 } }, 
+                React.createElement('input', { type: 'number', step: '0.1', value: values.disk, onChange: e => setValues({...values, disk: e.target.value}), placeholder: 'Global', style: { width: 70, padding: 6, background: '#0f172a', color: '#fff', border: error.includes('Disco') ? '1px solid #ef4444' : '1px solid #475569', borderRadius: 4 } })
+            ),
+             React.createElement('td', { style: { padding: 12, display: 'flex', gap: 8 } },
+                React.createElement('button', { onClick: handleSave, style: { background: '#22c55e', border: 'none', borderRadius: 4, padding: '6px 10px', cursor: 'pointer', color: '#fff' }, title: 'Guardar' }, '✔'),
+                React.createElement('button', { onClick: () => { setEditing(false); setError(''); }, style: { background: '#ef4444', border: 'none', borderRadius: 4, padding: '6px 10px', cursor: 'pointer', color: '#fff' }, title: 'Cancelar' }, '✘')
+            )
+        );
+    }
+
+    return React.createElement('tr', { style: { borderBottom: '1px solid #334155' } },
+        React.createElement('td', { style: { padding: 12 } }, server.server_id),
+        React.createElement('td', { style: { padding: 12, color: threshold?.cpu_threshold ? '#fff' : '#94a3b8' } }, threshold?.cpu_threshold ? `${threshold.cpu_threshold}%` : 'Global'),
+        React.createElement('td', { style: { padding: 12, color: threshold?.memory_threshold ? '#fff' : '#94a3b8' } }, threshold?.memory_threshold ? `${threshold.memory_threshold}%` : 'Global'),
+        React.createElement('td', { style: { padding: 12, color: threshold?.disk_threshold ? '#fff' : '#94a3b8' } }, threshold?.disk_threshold ? `${threshold.disk_threshold}%` : 'Global'),
+        React.createElement('td', { style: { padding: 12 } },
+            React.createElement('button', { onClick: () => setEditing(true), style: { background: '#3b82f6', border: 'none', borderRadius: 4, padding: '6px 12px', cursor: 'pointer', color: '#fff', fontSize: '0.8rem' } }, 'Editar')
+        )
+    );
+}
+
+function ThresholdManager() {
+    const [thresholds, setThresholds] = useState([]);
+    const [servers, setServers] = useState([]);
+    const [loading, setLoading] = useState(false);
+
+    const load = async () => {
+        setLoading(true);
+        try {
+            const [tData, sData] = await Promise.all([
+                fetchJSON('/api/umbrales'),
+                fetchJSON('/api/servers')
+            ]);
+            setThresholds(tData);
+            setServers(sData);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => { load(); }, []);
+
+    const handleUpdate = async (serverId, values) => {
+        try {
+            await fetchJSON(`/api/umbrales/${serverId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(values)
+            });
+            load(); 
+        } catch (e) {
+            alert('Error actualizando: ' + e.message);
+        }
+    };
+
+    const data = servers.map(s => {
+        const t = thresholds.find(x => x.server_id === s.server_id);
+        return { server: s, threshold: t };
+    });
+
+    const handleExport = async () => {
+        try {
+            const data = await fetchJSON('/api/umbrales/export');
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'umbrales_config.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Error exportando: ' + e.message);
+        }
+    };
+
+    const handleImport = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+            try {
+                const json = JSON.parse(evt.target.result);
+                const res = await fetchJSON('/api/umbrales/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(json)
+                });
+                alert(`Importación completada: ${res.count} registros procesados.`);
+                load();
+            } catch (err) {
+                alert('Error importando: ' + err.message);
+            }
+        };
+        reader.readAsText(file);
+        e.target.value = ''; // reset file input
+    };
+
+    return React.createElement('div', { className: 'card', style: { marginBottom: 20, border: '1px solid #334155', background: '#1e293b' } },
+        React.createElement('div', { className: 'title', style: { borderBottom: '1px solid #334155', paddingBottom: 10, marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' } }, 
+            'Gestión de Umbrales de Alerta',
+            React.createElement('div', { style: { display: 'flex', gap: 10 } },
+                React.createElement('button', { onClick: handleExport, style: { fontSize: '0.8rem', padding: '4px 8px', background: '#334155', border: '1px solid #475569', color: '#cbd5e1', borderRadius: 4, cursor: 'pointer' } }, '⬇ Exportar'),
+                React.createElement('label', { style: { fontSize: '0.8rem', padding: '4px 8px', background: '#334155', border: '1px solid #475569', color: '#cbd5e1', borderRadius: 4, cursor: 'pointer', display: 'inline-block' } },
+                    '⬆ Importar',
+                    React.createElement('input', { type: 'file', accept: '.json', style: { display: 'none' }, onChange: handleImport })
+                )
+            )
+        ),
+        React.createElement('div', { className: 'muted', style: { marginBottom: 15 } }, 'Define umbrales personalizados por servidor. Valores en blanco usan la configuración global.'),
+        
+        loading ? React.createElement('div', { style: { padding: 20, textAlign: 'center' } }, 'Cargando...') : 
+        React.createElement('div', { style: { overflowX: 'auto' } },
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', textAlign: 'left' } },
+                React.createElement('thead', null,
+                    React.createElement('tr', { style: { borderBottom: '2px solid #334155', color: '#94a3b8', fontSize: '0.85rem', textTransform: 'uppercase' } },
+                        React.createElement('th', { style: { padding: 12 } }, 'Servidor'),
+                        React.createElement('th', { style: { padding: 12 } }, 'CPU'),
+                        React.createElement('th', { style: { padding: 12 } }, 'Memoria'),
+                        React.createElement('th', { style: { padding: 12 } }, 'Disco'),
+                        React.createElement('th', { style: { padding: 12 } }, 'Acción')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    data.map(item => React.createElement(ThresholdRow, { 
+                        key: item.server.server_id, 
+                        server: item.server, 
+                        threshold: item.threshold, 
+                        onSave: handleUpdate 
+                    }))
+                )
+            )
+        )
+    );
+}
+
 function AdminPanel() {
     const [activeTab, setActiveTab] = useState('users');
     const [users, setUsers] = useState([]);
@@ -725,7 +926,8 @@ function AdminPanel() {
         { id: 'users', label: 'Usuarios' },
         { id: 'recipients', label: 'Destinatarios Extra' },
         { id: 'groups', label: 'Grupos de Servidores' },
-        { id: 'rules', label: 'Reglas de Alerta' }
+        { id: 'rules', label: 'Reglas de Alerta' },
+        { id: 'thresholds', label: 'Umbrales de Alerta' }
     ];
 
     return React.createElement('div', { className: 'wrap' },
@@ -758,6 +960,7 @@ function AdminPanel() {
             // CONTENIDO TABS
             activeTab === 'groups' && React.createElement(ServerGroupManager),
             activeTab === 'rules' && React.createElement(AlertRulesManager),
+            activeTab === 'thresholds' && React.createElement(ThresholdManager),
 
             activeTab === 'users' && React.createElement(React.Fragment, null,
                 React.createElement('div', { className: 'card', style: { marginBottom: 20 } },

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#38bdf8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2563eb;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Shield Background -->
+  <path d="M256 0L48 48v208c0 148.6 89.9 281.3 208 320 118.1-38.7 208-171.4 208-320V48L256 0z" fill="url(#shieldGrad)"/>
+  <!-- Inner Dark Area (Monitor Screen feel) -->
+  <path d="M120 100 h272 v220 c0 50 -40 100 -136 130 c-96 -30 -136 -80 -136 -130 V100 z" fill="#0f172a" opacity="0.8"/>
+  
+  <!-- Server Dots -->
+  <circle cx="160" cy="150" r="12" fill="#38bdf8"/>
+  <circle cx="200" cy="150" r="12" fill="#38bdf8"/>
+  <circle cx="160" cy="210" r="12" fill="#38bdf8"/>
+  <circle cx="200" cy="210" r="12" fill="#38bdf8"/>
+  <circle cx="160" cy="270" r="12" fill="#38bdf8"/>
+  <circle cx="200" cy="270" r="12" fill="#38bdf8"/>
+
+  <!-- Pulse Line -->
+  <path d="M60 256 h80 l40 -60 l50 120 l50 -100 l40 40 h92" 
+        fill="none" 
+        stroke="#4ade80" 
+        stroke-width="24" 
+        stroke-linecap="round" 
+        stroke-linejoin="round"/>
+</svg>
