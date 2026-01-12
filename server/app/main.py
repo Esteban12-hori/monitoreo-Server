@@ -711,6 +711,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     _alert_state[key] = current_time
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error checking alerts: {e}")
 
         # Actualizar caché en memoria
