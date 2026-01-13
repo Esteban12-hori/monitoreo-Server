@@ -2,7 +2,7 @@
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from app.models import Base, Server, User, AlertRecipient, AlertRule
+from app.models import Base, Server, User, AlertRecipient, AlertRule, UserServerLink
 from app.main import get_alert_recipients
 
 # Use in-memory SQLite for testing
@@ -16,22 +16,24 @@ def session():
         yield sess
     Base.metadata.drop_all(bind=engine)
 
-def test_assigned_user_receives_alerts(session):
+def test_assigned_user_receives_alerts_default(session):
+    """Test that by default (link.receive_alerts=True), assigned user gets alerts."""
     # 1. Create Server
     srv = Server(server_id="server-1", token="abc")
     session.add(srv)
     
-    # 2. Create User
-    user = User(email="user@example.com", name="Test User", password_hash="hash", is_admin=False, receive_alerts=True)
+    # 2. Create User (Global flag shouldn't matter now, but let's set it False to prove override)
+    user = User(email="user@example.com", name="Test User", password_hash="hash", is_admin=False, receive_alerts=False)
     session.add(user)
     session.commit()
     
-    # Refresh to ensure they are bound and fresh
     session.refresh(srv)
     session.refresh(user)
     
-    # 3. Assign User to Server
-    user.servers.append(srv)
+    # 3. Assign User to Server (Implicitly creates link with default True)
+    # Since 'servers' relationship is now viewonly=True, we must use UserServerLink explicitly
+    link = UserServerLink(user=user, server=srv)
+    session.add(link)
     session.commit()
     
     # 4. Verify recipients
@@ -40,21 +42,23 @@ def test_assigned_user_receives_alerts(session):
     
     assert "user@example.com" in recipients
 
-def test_assigned_user_no_alerts_flag(session):
+def test_assigned_user_disabled_alerts(session):
+    """Test that if link.receive_alerts is False, user does NOT get alerts."""
     # 1. Create Server
     srv = Server(server_id="server-2", token="abc")
     session.add(srv)
     
-    # 2. Create User with receive_alerts=False
-    user = User(email="quiet@example.com", name="Quiet User", password_hash="hash", is_admin=False, receive_alerts=False)
+    # 2. Create User
+    user = User(email="quiet@example.com", name="Quiet User", password_hash="hash", is_admin=False, receive_alerts=True)
     session.add(user)
     session.commit()
     
     session.refresh(srv)
     session.refresh(user)
     
-    # 3. Assign User to Server
-    user.servers.append(srv)
+    # 3. Assign User to Server manually via Link to set receive_alerts=False
+    link = UserServerLink(user_id=user.id, server_id=srv.id, receive_alerts=False)
+    session.add(link)
     session.commit()
     
     # 4. Verify recipients
@@ -78,7 +82,8 @@ def test_global_recipients_mixed_with_assigned(session):
     session.refresh(srv)
     session.refresh(user)
     
-    user.servers.append(srv)
+    link = UserServerLink(user=user, server=srv)
+    session.add(link)
     session.commit()
     
     # 3. Verify both are present

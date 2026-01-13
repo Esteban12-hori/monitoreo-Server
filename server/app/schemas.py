@@ -80,8 +80,16 @@ class UserResponseSchema(BaseModel):
     class Config:
         from_attributes = True
 
+class ServerAssignmentItem(BaseModel):
+    server_id: str
+    receive_alerts: bool = True
+
 class ServerAssignmentSchema(BaseModel):
-    server_ids: List[str] # Lista de server_id (string unique ID)
+    assignments: List[ServerAssignmentItem]
+
+class UserServerAssignmentResponse(BaseModel):
+    server_id: str
+    receive_alerts: bool
 
 class ChangePasswordSchema(BaseModel):
     current_password: str
@@ -95,6 +103,7 @@ class AlertRecipientSchema(BaseModel):
     id: int
     email: str
     name: Optional[str]
+    recipient_type: Optional[str] = "OTROS"
     created_at: Optional[datetime]
 
     class Config:
@@ -103,6 +112,7 @@ class AlertRecipientSchema(BaseModel):
 class AlertRecipientCreateSchema(BaseModel):
     email: EmailStr
     name: Optional[str] = None
+    recipient_type: Optional[str] = "OTROS"
 
 
 class AlertRuleBase(BaseModel):

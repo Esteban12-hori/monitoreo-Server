@@ -4,11 +4,16 @@ from sqlalchemy.sql import func
 
 Base = declarative_base()
 
-# Tabla de asociación para User <-> Server
-user_server_link = Table('user_server_link', Base.metadata,
-    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
-    Column('server_id', Integer, ForeignKey('servers.id'), primary_key=True)
-)
+# Tabla de asociación para User <-> Server (Modelo explícito para campos extra)
+class UserServerLink(Base):
+    __tablename__ = 'user_server_link'
+    user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
+    server_id = Column(Integer, ForeignKey('servers.id'), primary_key=True)
+    receive_alerts = Column(Boolean, default=True) # Controla si recibe alertas de este servidor específico
+
+    # Relationships
+    user = relationship("User", back_populates="server_links")
+    server = relationship("Server", back_populates="user_links")
 
 
 class Server(Base):
@@ -19,6 +24,11 @@ class Server(Base):
     report_interval = Column(Integer, default=2400) # Segundos
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     group_name = Column(String(255), nullable=True, index=True) # Nuevo campo
+
+    # Relación a través de UserServerLink
+    user_links = relationship("UserServerLink", back_populates="server", cascade="all, delete-orphan")
+    # Helper para obtener usuarios directamente (read-only recomendado para evitar conflictos)
+    assigned_users = relationship("User", secondary="user_server_link", viewonly=True)
 
 
 class AlertRule(Base):
@@ -68,6 +78,7 @@ class AlertRecipient(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=True)
+    recipient_type = Column(String(50), default="OTROS") # VS, SV, OTROS
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -83,7 +94,8 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relación Many-to-Many con Server
-    servers = relationship("Server", secondary=user_server_link, backref="assigned_users")
+    server_links = relationship("UserServerLink", back_populates="user", cascade="all, delete-orphan")
+    servers = relationship("Server", secondary="user_server_link", viewonly=True)
 
 
 class UserSession(Base):

@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Re
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy import create_engine, select, delete
+from sqlalchemy import create_engine, select, delete, text
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -19,14 +19,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
-    UserUpdateSchema
+    UserUpdateSchema, UserServerAssignmentResponse
 )
 from .email_utils import send_alert_email
 import time
@@ -131,10 +131,42 @@ def ensure_default_users(sess: Session):
         print(f"Advertencia al crear usuarios por defecto (posible concurrencia): {e}")
         sess.rollback()
 
+def ensure_recipient_type_column():
+    """Migración manual para agregar recipient_type a AlertRecipient si no existe."""
+    with Session(engine) as sess:
+        try:
+            # Intenta seleccionar la columna
+            sess.execute(select(AlertRecipient.recipient_type).limit(1))
+        except Exception:
+            # Si falla, probablemente no existe la columna
+            print("Agregando columna recipient_type a alert_recipients...")
+            try:
+                sess.execute(text("ALTER TABLE alert_recipients ADD COLUMN recipient_type VARCHAR(50) DEFAULT 'OTROS'"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando recipient_type: {e}")
+                sess.rollback()
+
+def ensure_link_column():
+    """Migración manual para agregar receive_alerts a user_server_link si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(UserServerLink.receive_alerts).limit(1))
+        except Exception:
+            print("Agregando columna receive_alerts a user_server_link...")
+            try:
+                sess.execute(text("ALTER TABLE user_server_link ADD COLUMN receive_alerts BOOLEAN DEFAULT 1"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando user_server_link: {e}")
+                sess.rollback()
+
 @app.on_event("startup")
 def startup():
     # Usar un lock o simplemente un try-except robusto
     try:
+        ensure_recipient_type_column()
+        ensure_link_column()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
             # Deshabilitado temporalmente para evitar conflictos de concurrencia en reinicios rápidos
@@ -313,21 +345,46 @@ def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: 
         if not target_user:
             raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
         
-        # Buscar los servidores por server_id (string)
-        servers = sess.execute(select(Server).where(Server.server_id.in_(payload.server_ids))).scalars().all()
+        # 1. Eliminar asignaciones existentes
+        sess.execute(delete(UserServerLink).where(UserServerLink.user_id == user_id))
         
-        target_user.servers = servers
+        # 2. Crear nuevas asignaciones
+        if payload.assignments:
+            # Obtener IDs internos de los servidores
+            server_ids_str = [a.server_id for a in payload.assignments]
+            servers_map = {
+                s.server_id: s.id 
+                for s in sess.execute(select(Server).where(Server.server_id.in_(server_ids_str))).scalars().all()
+            }
+            
+            for item in payload.assignments:
+                s_int_id = servers_map.get(item.server_id)
+                if s_int_id:
+                    link = UserServerLink(
+                        user_id=user_id,
+                        server_id=s_int_id,
+                        receive_alerts=item.receive_alerts
+                    )
+                    sess.add(link)
+        
         sess.commit()
-        return {"status": "assigned", "count": len(servers)}
+        return {"status": "assigned", "count": len(payload.assignments)}
 
-@app.get("/api/admin/users/{user_id}/servers")
+@app.get("/api/admin/users/{user_id}/servers", response_model=List[UserServerAssignmentResponse])
 def get_user_servers(user_id: int, user: dict = Depends(require_admin)):
     with Session(engine) as sess:
         target_user = sess.get(User, user_id)
         if not target_user:
             raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
         
-        return [s.server_id for s in target_user.servers]
+        res = []
+        for link in target_user.server_links:
+            # Asegurarse de que link.server esté cargado
+            res.append({
+                "server_id": link.server.server_id,
+                "receive_alerts": link.receive_alerts
+            })
+        return res
 
 # --- Servidores y Métricas ---
 
@@ -422,11 +479,13 @@ def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
                 pass
                 
     # 3. Assigned Users
-    # srv is a Server object, which has 'assigned_users' relationship
-    if srv.assigned_users:
-        for u in srv.assigned_users:
-            if u.receive_alerts and u.email:
-                recipients.append(u.email)
+    # srv is a Server object, which has 'user_links' relationship
+    if srv.user_links:
+        for link in srv.user_links:
+            # Check link specific flag (defaults to True).
+            # We assume explicit assignment implies permission unless turned off.
+            if link.receive_alerts and link.user.email:
+                recipients.append(link.user.email)
 
     return list(set(recipients)), applied_rules
 
@@ -437,7 +496,11 @@ def create_alert_recipient(payload: AlertRecipientCreateSchema, user: dict = Dep
         if existing:
             raise HTTPException(status_code=400, detail="El email ya está registrado")
         
-        new_recipient = AlertRecipient(email=payload.email, name=payload.name)
+        new_recipient = AlertRecipient(
+            email=payload.email, 
+            name=payload.name,
+            recipient_type=payload.recipient_type
+        )
         sess.add(new_recipient)
         sess.commit()
         sess.refresh(new_recipient)

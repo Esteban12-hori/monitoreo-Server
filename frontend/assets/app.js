@@ -101,7 +101,8 @@ function LineChart({ labels, data, label, color='#22d3ee' }) {
 
 function ServerAssignmentModal({ user, onClose }) {
     const [allServers, setAllServers] = useState([]);
-    const [assigned, setAssigned] = useState([]);
+    // State: server_id -> { assigned: bool, alerts: bool }
+    const [assignments, setAssignments] = useState({});
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -112,7 +113,23 @@ function ServerAssignmentModal({ user, onClose }) {
                     fetchJSON(`/api/admin/users/${user.id}/servers`)
                 ]);
                 setAllServers(serversData);
-                setAssigned(assignedData); // Array of strings (server_ids)
+                
+                // Initialize map
+                const map = {};
+                serversData.forEach(s => {
+                    map[s.server_id] = { assigned: false, alerts: true };
+                });
+                
+                // Apply existing assignments
+                // API returns [{server_id, receive_alerts}, ...]
+                assignedData.forEach(a => {
+                    if (map[a.server_id]) {
+                        map[a.server_id].assigned = true;
+                        map[a.server_id].alerts = a.receive_alerts;
+                    }
+                });
+                
+                setAssignments(map);
             } catch (e) {
                 alert('Error cargando servidores: ' + e.message);
                 onClose();
@@ -123,20 +140,33 @@ function ServerAssignmentModal({ user, onClose }) {
         load();
     }, [user.id]);
 
-    const toggleServer = (sid) => {
-        if (assigned.includes(sid)) {
-            setAssigned(assigned.filter(s => s !== sid));
-        } else {
-            setAssigned([...assigned, sid]);
-        }
+    const toggleAssigned = (sid) => {
+        setAssignments(prev => ({
+            ...prev,
+            [sid]: { ...prev[sid], assigned: !prev[sid].assigned }
+        }));
+    };
+    
+    const toggleAlerts = (sid) => {
+        setAssignments(prev => ({
+            ...prev,
+            [sid]: { ...prev[sid], alerts: !prev[sid].alerts }
+        }));
     };
 
     const handleSave = async () => {
         try {
+            const payload = Object.entries(assignments)
+                .filter(([_, val]) => val.assigned)
+                .map(([sid, val]) => ({
+                    server_id: sid,
+                    receive_alerts: val.alerts
+                }));
+
             await fetchJSON(`/api/admin/users/${user.id}/servers`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ server_ids: assigned })
+                body: JSON.stringify({ assignments: payload })
             });
             alert('Asignación guardada');
             onClose();
@@ -151,20 +181,36 @@ function ServerAssignmentModal({ user, onClose }) {
             background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 
         } 
     },
-        React.createElement('div', { className: 'card', style: { width: 500, maxHeight: '80vh', overflowY: 'auto' } },
+        React.createElement('div', { className: 'card', style: { width: 600, maxHeight: '80vh', overflowY: 'auto' } },
             React.createElement('div', { className: 'title' }, `Asignar Servidores a ${user.name || user.email}`),
+            React.createElement('div', { className: 'muted', style: { marginBottom: 15 } }, 'Selecciona los servidores que el usuario puede ver. Marca la casilla "Alertas" para que reciba notificaciones de ese servidor.'),
+            
             loading ? 'Cargando...' : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, margin: '20px 0' } },
                 allServers.length === 0 ? 'No hay servidores registrados' :
-                allServers.map(s => 
-                    React.createElement('label', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 5, border: '1px solid #333', borderRadius: 4, cursor: 'pointer', background: assigned.includes(s.server_id) ? '#1e293b' : 'transparent' } },
+                allServers.map(s => {
+                    const st = assignments[s.server_id] || { assigned: false, alerts: true };
+                    return React.createElement('div', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 8, border: '1px solid #333', borderRadius: 4, background: st.assigned ? '#1e293b' : 'transparent' } },
+                        // Checkbox Assigned
                         React.createElement('input', { 
                             type: 'checkbox', 
-                            checked: assigned.includes(s.server_id), 
-                            onChange: () => toggleServer(s.server_id) 
+                            checked: st.assigned, 
+                            onChange: () => toggleAssigned(s.server_id),
+                            style: { cursor: 'pointer', transform: 'scale(1.2)' }
                         }),
-                        React.createElement('span', null, s.server_id)
-                    )
-                )
+                        // Server ID
+                        React.createElement('span', { style: { flex: 1, fontWeight: 500, color: st.assigned ? '#fff' : '#94a3b8' } }, s.server_id),
+                        
+                        // Checkbox Alerts (Only if assigned)
+                        st.assigned && React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.9rem', cursor: 'pointer', color: st.alerts ? '#38bdf8' : '#64748b' } },
+                            React.createElement('input', {
+                                type: 'checkbox',
+                                checked: st.alerts,
+                                onChange: () => toggleAlerts(s.server_id)
+                            }),
+                            'Alertas'
+                        )
+                    );
+                })
             ),
             React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end' } },
                 React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
@@ -964,7 +1010,7 @@ function AdminPanel() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false });
-    const [newRecipient, setNewRecipient] = useState({ email: '', name: '' });
+    const [newRecipient, setNewRecipient] = useState({ email: '', name: '', recipient_type: 'OTROS' });
     const [assigningUser, setAssigningUser] = useState(null);
     const [editingUser, setEditingUser] = useState(null);
 
@@ -1043,7 +1089,7 @@ function AdminPanel() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newRecipient)
             });
-            setNewRecipient({ email: '', name: '' });
+            setNewRecipient({ email: '', name: '', recipient_type: 'OTROS' });
             loadRecipients();
         } catch (e) {
             alert('Error creando destinatario: ' + e.message);
@@ -1184,6 +1230,15 @@ function AdminPanel() {
                             value: newRecipient.name, 
                             onChange: e => setNewRecipient({...newRecipient, name: e.target.value}) 
                         }),
+                        React.createElement('select', {
+                            value: newRecipient.recipient_type,
+                            onChange: e => setNewRecipient({...newRecipient, recipient_type: e.target.value}),
+                            style: { background: '#1e293b', border: '1px solid #475569', color: '#fff', borderRadius: 4, padding: '8px' }
+                        },
+                            React.createElement('option', { value: 'VS' }, 'Grupo de VS (Vendedores)'),
+                            React.createElement('option', { value: 'SV' }, 'Grupo de SV (Supervisores)'),
+                            React.createElement('option', { value: 'OTROS' }, 'Otros')
+                        ),
                         React.createElement('button', { onClick: handleCreateRecipient }, 'Añadir Destinatario')
                     )
                 ),
@@ -1195,6 +1250,7 @@ function AdminPanel() {
                                 React.createElement('th', { style: { padding: 8 } }, 'ID'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Email'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Acciones')
                             )
                         ),
@@ -1204,6 +1260,7 @@ function AdminPanel() {
                                     React.createElement('td', { style: { padding: 8 } }, r.id),
                                     React.createElement('td', { style: { padding: 8 } }, r.email),
                                     React.createElement('td', { style: { padding: 8 } }, r.name || '-'),
+                                    React.createElement('td', { style: { padding: 8 } }, r.recipient_type || 'OTROS'),
                                     React.createElement('td', { style: { padding: 8 } },
                                         React.createElement('button', { 
                                             style: { backgroundColor: '#ef4444', fontSize: '0.8rem', padding: '4px 8px' },
