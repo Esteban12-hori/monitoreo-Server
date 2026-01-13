@@ -7,6 +7,7 @@ import uuid
 import unicodedata
 
 from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -927,9 +928,41 @@ def health():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# --- Servir Frontend (debe ir al final) ---
+# --- Servir Frontend con Cache Busting (debe ir al final) ---
+import re
+# Generar versión al inicio del servidor (timestamp)
+APP_VERSION = str(int(time.time()))
+
 frontend_path = Path(__file__).resolve().parent.parent.parent / "frontend"
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_spa():
+    if not frontend_path.exists():
+        return HTMLResponse("Frontend not found", status_code=404)
+    
+    index_file = frontend_path / "index.html"
+    if not index_file.exists():
+        return HTMLResponse("index.html not found", status_code=404)
+        
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        # Inyectar versión en app.js y styles.css para forzar recarga (Cache Busting)
+        content = re.sub(r'src="assets/app\.js(\?v=[^"]*)?"', f'src="assets/app.js?v={APP_VERSION}"', content)
+        content = re.sub(r'href="assets/styles\.css(\?v=[^"]*)?"', f'href="assets/styles.css?v={APP_VERSION}"', content)
+        
+        return HTMLResponse(content)
+    except Exception as e:
+        return HTMLResponse(f"Error loading frontend: {str(e)}", status_code=500)
+
 if frontend_path.exists():
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+    # Montar assets explícitamente
+    assets_path = frontend_path / "assets"
+    if assets_path.exists():
+        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+    
+    # Montar raíz como fallback (ej. favicon.ico), pero html=False para que / sea manejado por serve_spa
+    app.mount("/", StaticFiles(directory=frontend_path, html=False), name="frontend_root")
 else:
     print(f"Advertencia: No se encontró el frontend en {frontend_path}")
