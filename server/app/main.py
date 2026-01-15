@@ -410,7 +410,10 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
             servers = sess.execute(select(Server)).scalars().all()
         else:
             db_user = sess.get(User, user["user_id"])
-            servers = db_user.servers if db_user else []
+            if db_user and db_user.server_links:
+                servers = [link.server for link in db_user.server_links if link.server]
+            else:
+                servers = sess.execute(select(Server)).scalars().all()
         return [
             {
                 "server_id": s.server_id, 
