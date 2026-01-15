@@ -130,19 +130,19 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
     """
 
     to_recipients = []
-    # EMAIL_RECEIVERS es una lista de strings (gracias al .split(',') en config.py)
-    for receiver in EMAIL_RECEIVERS:
-        r = receiver.strip()
-        if r:
-            to_recipients.append({"Email": r, "Name": "Admin"})
-            
-    # Destinatarios extra (desde DB)
+
     if extra_recipients:
         for r in extra_recipients:
             if isinstance(r, dict):
                 to_recipients.append({"Email": r.get('email', ''), "Name": r.get('name', 'User')})
             elif isinstance(r, str):
                 to_recipients.append({"Email": r, "Name": "User"})
+
+    if not to_recipients:
+        for receiver in EMAIL_RECEIVERS:
+            r = receiver.strip()
+            if r:
+                to_recipients.append({"Email": r, "Name": "Admin"})
 
     # Eliminar duplicados
     unique = {}

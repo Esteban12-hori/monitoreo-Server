@@ -86,9 +86,9 @@ def test_global_recipients_mixed_with_assigned(session):
     session.add(link)
     session.commit()
     
-    # 3. Verify both are present
+    # 3. Verify: Global recipient should NOT be present (per new logic), only Assigned User
     session.refresh(srv)
     recipients, rules = get_alert_recipients(session, srv, "disk")
     
-    assert "admin@example.com" in recipients
+    assert "admin@example.com" not in recipients
     assert "user@example.com" in recipients

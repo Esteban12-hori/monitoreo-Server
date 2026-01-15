@@ -33,6 +33,17 @@ def ensure_packages(packages):
     if not missing:
         return True
     print_step(f"Instalando dependencias: {', '.join(missing)}")
+
+    # Verificar si pip está instalado antes de intentar usarlo
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        print(f"\n❌ Error Crítico: 'pip' no está instalado en {sys.executable}")
+        if platform.system() == "Linux":
+             print("💡 Solución sugerida: Ejecuta el siguiente comando y vuelve a intentar:")
+             print("   sudo apt update && sudo apt install -y python3-pip python3-psutil")
+        return False
+
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + missing
     try:
         subprocess.check_call(cmd)

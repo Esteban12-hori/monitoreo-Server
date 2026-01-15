@@ -406,7 +406,11 @@ def register_server(payload: RegisterServerSchema):
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
-        servers = sess.execute(select(Server)).scalars().all()
+        if user.get("is_admin"):
+            servers = sess.execute(select(Server)).scalars().all()
+        else:
+            db_user = sess.get(User, user["user_id"])
+            servers = db_user.servers if db_user else []
         return [
             {
                 "server_id": s.server_id, 
@@ -454,11 +458,9 @@ def list_alert_recipients(user: dict = Depends(require_admin)):
     return recipients
 
 def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
-    # 1. Default recipients
-    recipients = [r.email for r in sess.execute(select(AlertRecipient)).scalars().all()]
-    
-    # 2. Alert Rules
+    # 1. Alert Rules
     rules = sess.execute(select(AlertRule).where(AlertRule.alert_type == alert_type)).scalars().all()
+    recipients = []
     applied_rules = []
     
     for rule in rules:

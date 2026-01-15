@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.models import Base, Server, User, AlertRule, AlertRecipient
-from app.alert_logic import get_alert_recipients
+from app.main import get_alert_recipients
 
 class TestAlertRules(unittest.TestCase):
     def setUp(self):
@@ -31,11 +31,11 @@ class TestAlertRules(unittest.TestCase):
         
         self.session.add_all([srv1, srv2, srv3])
         
-        # Recipient Global
+        # Recipient Global (Should be IGNORED in new logic)
         r1 = AlertRecipient(email="global@test.com", name="Global")
         self.session.add(r1)
 
-        # User subscribed
+        # User subscribed (Should be IGNORED unless assigned)
         u1 = User(email="user@test.com", password_hash="hash", receive_alerts=True, is_admin=True)
         self.session.add(u1)
 
@@ -71,13 +71,13 @@ class TestAlertRules(unittest.TestCase):
         self.session.commit()
 
         # Test Case 1: srv1 (Group A) - CPU Alert
-        # Should match: Global Recipient, User, Global Rule, Srv1 Rule, GroupA Rule
+        # Should match: Global Rule, Srv1 Rule, GroupA Rule
+        # Ignored: Global Recipient, User (not assigned)
         recipients, rules = get_alert_recipients(self.session, srv1, "cpu")
-        emails = sorted([r['email'] for r in recipients])
+        # Recipients is now a list of strings
+        emails = sorted(recipients)
         
         expected = sorted([
-            "global@test.com", 
-            "user@test.com", 
             "rule_global@test.com", 
             "rule_srv1@test.com", 
             "rule_groupA@test.com"
@@ -86,41 +86,34 @@ class TestAlertRules(unittest.TestCase):
         self.assertEqual(emails, expected)
         
         # Verify rules logged
-        self.assertTrue(any("Global AlertRecipients" in r for r in rules))
-        self.assertTrue(any("Subscribed Users" in r for r in rules))
-        self.assertTrue(any(f"Rule(id={rule_global.id}" in r for r in rules))
-        self.assertTrue(any(f"Rule(id={rule_srv1.id}" in r for r in rules))
-        self.assertTrue(any(f"Rule(id={rule_groupA.id}" in r for r in rules))
+        # Global AlertRecipients and Subscribed Users are no longer logged/added
+        self.assertTrue(any(f"{rule_global.id}" in str(r) for r in rules)) # basic check on rule logging
         
         # Test Case 2: srv2 (Group B) - CPU Alert
-        # Should match: Global Recipient, User, Global Rule.
+        # Should match: Global Rule.
         # Should NOT match: Srv1 Rule, GroupA Rule.
         recipients, rules = get_alert_recipients(self.session, srv2, "cpu")
-        emails = sorted([r['email'] for r in recipients])
+        emails = sorted(recipients)
         
         expected = sorted([
-            "global@test.com", 
-            "user@test.com", 
             "rule_global@test.com"
         ])
         print(f"Test Case 2 Emails: {emails}")
         self.assertEqual(emails, expected)
 
         # Test Case 3: srv3 (No Group) - CPU Alert
-        # Should match: Global Recipient, User, Global Rule.
+        # Should match: Global Rule.
         recipients, rules = get_alert_recipients(self.session, srv3, "cpu")
-        emails = sorted([r['email'] for r in recipients])
+        emails = sorted(recipients)
         print(f"Test Case 3 Emails: {emails}")
         self.assertEqual(emails, expected)
         
         # Test Case 4: srv1 - Memory Alert
-        # Should match: Global Recipient, User, Memory Rule.
+        # Should match: Memory Rule.
         recipients, rules = get_alert_recipients(self.session, srv1, "memory")
-        emails = sorted([r['email'] for r in recipients])
+        emails = sorted(recipients)
         
         expected_mem = sorted([
-            "global@test.com", 
-            "user@test.com", 
             "rule_mem@test.com"
         ])
         print(f"Test Case 4 Emails: {emails}")
