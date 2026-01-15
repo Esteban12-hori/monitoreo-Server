@@ -406,14 +406,14 @@ def register_server(payload: RegisterServerSchema):
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
-        if user.get("is_admin"):
-            servers = sess.execute(select(Server)).scalars().all()
+        db_user = sess.get(User, user["user_id"])
+        if db_user and db_user.server_links:
+            servers = [link.server for link in db_user.server_links if link.server]
         else:
-            db_user = sess.get(User, user["user_id"])
-            if db_user and db_user.server_links:
-                servers = [link.server for link in db_user.server_links if link.server]
-            else:
+            if db_user and db_user.is_admin:
                 servers = sess.execute(select(Server)).scalars().all()
+            else:
+                servers = []
         return [
             {
                 "server_id": s.server_id, 
