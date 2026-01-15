@@ -102,15 +102,19 @@ def load_config(path: Path) -> dict:
 
 def setup_logging():
     log_dir = Path(__file__).resolve().parent / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "agent.log"
+    handlers = []
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        handlers.append(file_handler)
+    except Exception as e:
+        print(f"No se pudo escribir log en archivo {log_path}: {e}")
+    handlers.append(logging.StreamHandler())
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
-            logging.StreamHandler()
-        ]
+        handlers=handlers,
     )
     logging.info("Agente iniciado")
 

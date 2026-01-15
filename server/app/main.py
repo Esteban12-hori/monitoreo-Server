@@ -162,12 +162,32 @@ def ensure_link_column():
                 print(f"Error migrando user_server_link: {e}")
                 sess.rollback()
 
+def ensure_admin_assignments():
+    """Asegura que todos los administradores tengan asignados todos los servidores (para alertas)."""
+    with Session(engine) as sess:
+        try:
+            admins = sess.execute(select(User).where(User.is_admin == True)).scalars().all()
+            servers = sess.execute(select(Server)).scalars().all()
+            
+            for admin in admins:
+                existing_links = {l.server_id for l in admin.server_links}
+                for srv in servers:
+                    if srv.id not in existing_links:
+                        print(f"Auto-asignando {srv.server_id} al admin {admin.email}")
+                        link = UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True)
+                        sess.add(link)
+            sess.commit()
+        except Exception as e:
+            print(f"Error en ensure_admin_assignments: {e}")
+            sess.rollback()
+
 @app.on_event("startup")
 def startup():
     # Usar un lock o simplemente un try-except robusto
     try:
         ensure_recipient_type_column()
         ensure_link_column()
+        ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
             # Deshabilitado temporalmente para evitar conflictos de concurrencia en reinicios rápidos
@@ -397,8 +417,16 @@ def register_server(payload: RegisterServerSchema):
             existing.token = payload.token
             sess.commit()
             return {"status": "updated", "server_id": existing.server_id}
+        
         srv = Server(server_id=payload.server_id, token=payload.token)
         sess.add(srv)
+        sess.flush()
+        
+        # Auto-asignar a todos los admins
+        admins = sess.execute(select(User).where(User.is_admin == True)).scalars().all()
+        for admin in admins:
+            sess.add(UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True))
+            
         sess.commit()
         return {"status": "registered", "server_id": payload.server_id}
 
@@ -406,14 +434,7 @@ def register_server(payload: RegisterServerSchema):
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
-        db_user = sess.get(User, user["user_id"])
-        if db_user and db_user.server_links:
-            servers = [link.server for link in db_user.server_links if link.server]
-        else:
-            if db_user and db_user.is_admin:
-                servers = sess.execute(select(Server)).scalars().all()
-            else:
-                servers = []
+        servers = sess.execute(select(Server)).scalars().all()
         return [
             {
                 "server_id": s.server_id, 
