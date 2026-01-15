@@ -434,7 +434,11 @@ def register_server(payload: RegisterServerSchema):
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
-        servers = sess.execute(select(Server)).scalars().all()
+        db_user = sess.get(User, user["user_id"])
+        if db_user and not db_user.is_admin:
+            servers = [link.server for link in db_user.server_links if link.server]
+        else:
+            servers = sess.execute(select(Server)).scalars().all()
         return [
             {
                 "server_id": s.server_id, 
