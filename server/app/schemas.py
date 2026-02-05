@@ -80,6 +80,26 @@ class UserResponseSchema(BaseModel):
     class Config:
         from_attributes = True
 
+
+class DataMonitoringSchema(BaseModel):
+    app: str
+    cashRegisterNumber: Optional[int] = None
+    userName: str
+    flow: str
+    patent: Optional[str] = None
+    vehicleType: Optional[str] = None
+    product: Optional[str] = None
+    createdAt: str
+    entityId: str
+    workingDay: str
+
+class DataMonitoringResponseSchema(DataMonitoringSchema):
+    id: int
+    received_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class ServerAssignmentItem(BaseModel):
     server_id: str
     receive_alerts: bool = True

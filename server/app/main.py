@@ -5,9 +5,11 @@ from datetime import datetime
 import os
 import uuid
 import unicodedata
+import io
+import csv
 
 from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -27,7 +29,7 @@ from .schemas import (
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
-    UserUpdateSchema, UserServerAssignmentResponse
+    UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema
 )
 from .email_utils import send_alert_email
 import time
@@ -957,6 +959,82 @@ def health():
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/data-monitoring", status_code=201)
+def create_data_monitoring(payload: DataMonitoringSchema):
+    try:
+        with Session(engine) as sess:
+            data = DataMonitoring(
+                app=payload.app,
+                cash_register_number=payload.cashRegisterNumber,
+                user_name=payload.userName,
+                flow=payload.flow,
+                patent=payload.patent,
+                vehicle_type=payload.vehicleType,
+                product=payload.product,
+                created_at_client=payload.createdAt,
+                entity_id=payload.entityId,
+                working_day=payload.workingDay
+            )
+            sess.add(data)
+            sess.commit()
+            sess.refresh(data)
+            return {"status": "created", "id": data.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
+def list_data_monitoring(limit: int = 50, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        data = sess.execute(
+            select(DataMonitoring)
+            .order_by(DataMonitoring.id.desc())
+            .limit(limit)
+        ).scalars().all()
+        
+        result = []
+        for d in data:
+            result.append(DataMonitoringResponseSchema(
+                app=d.app,
+                cashRegisterNumber=d.cash_register_number,
+                userName=d.user_name,
+                flow=d.flow,
+                patent=d.patent,
+                vehicleType=d.vehicle_type,
+                product=d.product,
+                createdAt=d.created_at_client,
+                entityId=d.entity_id,
+                workingDay=d.working_day,
+                id=d.id,
+                received_at=d.received_at
+            ))
+        return result
+
+
+@app.get("/api/data-monitoring/export")
+def export_data_monitoring(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        query = select(DataMonitoring).order_by(DataMonitoring.id.desc())
+        results = sess.execute(query).scalars().all()
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        headers = ["id", "app", "cash_register_number", "user_name", "flow", "patent", "vehicle_type", "product", "created_at_client", "entity_id", "working_day", "received_at"]
+        writer.writerow(headers)
+        
+        for row in results:
+            writer.writerow([
+                row.id, row.app, row.cash_register_number, row.user_name, 
+                row.flow, row.patent, row.vehicle_type, row.product, 
+                row.created_at_client, row.entity_id, row.working_day, row.received_at
+            ])
+            
+        output.seek(0)
+        response = StreamingResponse(iter([output.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = "attachment; filename=data_monitoring.csv"
+        return response
 
 # --- Servir Frontend con Cache Busting (debe ir al final) ---
 import re

@@ -131,3 +131,20 @@ class AuditLog(Base):
     changes = Column(Text, nullable=True) # JSON details
     user_email = Column(String(255), nullable=True) # Who did it
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataMonitoring(Base):
+    __tablename__ = "data_monitoring"
+
+    id = Column(Integer, primary_key=True)
+    app = Column(String(100), nullable=False)
+    cash_register_number = Column(Integer, nullable=True)
+    user_name = Column(String(255), nullable=False)
+    flow = Column(String(100), nullable=False)
+    patent = Column(String(50), nullable=True)
+    vehicle_type = Column(String(50), nullable=True)
+    product = Column(String(100), nullable=True)
+    created_at_client = Column(String(100), nullable=False)
+    entity_id = Column(String(100), nullable=False)
+    working_day = Column(String(100), nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())

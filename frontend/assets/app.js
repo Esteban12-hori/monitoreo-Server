@@ -1384,6 +1384,140 @@ function ThresholdModal({ serverId, onClose }) {
     );
 }
 
+function BarChart({ labels, data, label, color='#22d3ee' }) {
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    if (!ref.current) return;
+    const ctx = ref.current.getContext('2d');
+    const chart = new window.Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label,
+          data,
+          backgroundColor: color,
+          borderColor: color,
+          borderWidth: 1
+        }]
+      },
+      options: { 
+        responsive: true, 
+        plugins: { legend: { display: false } },
+        scales: {
+            y: { beginAtZero: true, grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+            x: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } }
+        }
+      }
+    });
+    return () => chart.destroy();
+  }, [JSON.stringify(labels), JSON.stringify(data)]);
+  return React.createElement('canvas', { height: 100, ref });
+}
+
+function DataMonitoringDashboard() {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const res = await fetchJSON('/api/data-monitoring?limit=50');
+      setData(res);
+      setError(null);
+    } catch (err) {
+      console.error(err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const flowCounts = {};
+  data.forEach(d => {
+      const f = d.flow || 'Unknown';
+      flowCounts[f] = (flowCounts[f] || 0) + 1;
+  });
+  const chartLabels = Object.keys(flowCounts);
+  const chartData = Object.values(flowCounts);
+
+  const handleDownload = () => {
+    const token = getDashboardToken();
+    const url = '/api/data-monitoring/export';
+    fetch(url, { headers: { 'X-Dashboard-Token': token } })
+    .then(response => {
+        if (!response.ok) throw new Error('Download failed');
+        return response.blob();
+    })
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `monitoring_data_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    })
+    .catch(err => alert('Error descargando CSV: ' + err.message));
+  };
+
+  return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
+    React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 } },
+      React.createElement('div', { className: 'title' }, 'Monitoreo de Datos (Ingestión)'),
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        React.createElement('button', { onClick: handleDownload, style: { background: '#10b981', border: 'none', color: 'white', cursor: 'pointer', borderRadius: 4, padding: '4px 12px', fontSize: '0.85rem' } }, 'Descargar CSV'),
+        React.createElement('button', { onClick: fetchData, style: { background: 'none', border: '1px solid #444', color: '#ccc', cursor: 'pointer', borderRadius: 4, padding: '4px 8px' } }, 'Refrescar')
+      )
+    ),
+    error && React.createElement('div', { style: { color: '#ef4444', marginBottom: 8 } }, error),
+    
+    chartLabels.length > 0 && React.createElement('div', { style: { marginBottom: 24 } },
+        React.createElement('div', { className: 'title', style: { fontSize: '0.9rem', marginBottom: 8, color: '#94a3b8' } }, 'Distribución por Flujo'),
+        React.createElement(BarChart, { labels: chartLabels, data: chartData, label: 'Eventos', color: '#3b82f6' })
+    ),
+
+    React.createElement('div', { style: { overflowX: 'auto' } },
+      React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' } },
+        React.createElement('thead', null,
+          React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid #444' } },
+            ['ID', 'App', 'Caja', 'Usuario', 'Flujo', 'Patente', 'Tipo Veh.', 'Producto', 'Created At', 'Entity ID', 'Working Day', 'Received At'].map(h => 
+                React.createElement('th', { key: h, style: { padding: 8, color: '#94a3b8' } }, h)
+            )
+          )
+        ),
+        React.createElement('tbody', null,
+          data.length === 0 
+            ? React.createElement('tr', null, React.createElement('td', { colSpan: 12, style: { padding: 8, textAlign: 'center', color: '#888' } }, 'Sin datos'))
+            : data.map(row => 
+                React.createElement('tr', { key: row.id, style: { borderBottom: '1px solid #333' } },
+                  React.createElement('td', { style: { padding: 8 } }, row.id),
+                  React.createElement('td', { style: { padding: 8 } }, row.app),
+                  React.createElement('td', { style: { padding: 8 } }, row.cashRegisterNumber),
+                  React.createElement('td', { style: { padding: 8 } }, row.userName),
+                  React.createElement('td', { style: { padding: 8 } }, row.flow),
+                  React.createElement('td', { style: { padding: 8 } }, row.patent || '-'),
+                  React.createElement('td', { style: { padding: 8 } }, row.vehicleType || '-'),
+                  React.createElement('td', { style: { padding: 8 } }, row.product || '-'),
+                  React.createElement('td', { style: { padding: 8 } }, row.createdAt),
+                  React.createElement('td', { style: { padding: 8 } }, row.entityId),
+                  React.createElement('td', { style: { padding: 8 } }, row.workingDay),
+                  React.createElement('td', { style: { padding: 8, color: '#888', fontSize: '0.75rem' } }, new Date(row.received_at).toLocaleString())
+                )
+            )
+        )
+      )
+    )
+  );
+}
+
 function App() {
   const { demo } = useQuery();
   const apiBase = getApiBase();
