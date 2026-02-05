@@ -1,6 +1,7 @@
 const { useEffect, useState, useRef } = React;
 
-// v10 - Fix potential cache issues
+// v11 - Force version bump
+console.log("ServPulse Dashboard v2.1 Loaded");
 
 // Token del dashboard solo desde localStorage (emitido por login)
 function getDashboardToken() {
@@ -1713,7 +1714,7 @@ function App() {
                     filter: 'drop-shadow(0 0 4px rgba(56, 189, 248, 0.5))'
                 }
             }),
-            'ServPulse 2.0'
+            'ServPulse 2.1'
         ),
         React.createElement('span', { className: 'pill' }, demo ? 'DEMO' : 'LIVE'),
         !demo && React.createElement('div', { style: { display: 'flex', gap: 10, marginLeft: 20 } },
