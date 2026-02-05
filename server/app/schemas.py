@@ -83,15 +83,18 @@ class UserResponseSchema(BaseModel):
 
 class DataMonitoringSchema(BaseModel):
     app: str
-    cashRegisterNumber: Optional[int] = None
-    userName: str
+    cash_register_number: Optional[int] = Field(None, alias="cashRegisterNumber")
+    user_name: str = Field(..., alias="userName")
     flow: str
     patent: Optional[str] = None
-    vehicleType: Optional[str] = None
+    vehicle_type: Optional[str] = Field(None, alias="vehicleType")
     product: Optional[str] = None
-    createdAt: str
-    entityId: str
-    workingDay: str
+    created_at_client: str = Field(..., alias="createdAt")
+    entity_id: str = Field(..., alias="entityId")
+    working_day: str = Field(..., alias="workingDay")
+
+    class Config:
+        populate_by_name = True
 
 class DataMonitoringResponseSchema(DataMonitoringSchema):
     id: int

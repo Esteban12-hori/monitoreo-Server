@@ -966,17 +966,17 @@ def create_data_monitoring(payload: DataMonitoringSchema):
     try:
         with Session(engine) as sess:
             data = DataMonitoring(
-                app=payload.app,
-                cash_register_number=payload.cashRegisterNumber,
-                user_name=payload.userName,
-                flow=payload.flow,
-                patent=payload.patent,
-                vehicle_type=payload.vehicleType,
-                product=payload.product,
-                created_at_client=payload.createdAt,
-                entity_id=payload.entityId,
-                working_day=payload.workingDay
-            )
+                        app=payload.app,
+                        cash_register_number=payload.cash_register_number,
+                        user_name=payload.user_name,
+                        flow=payload.flow,
+                        patent=payload.patent,
+                        vehicle_type=payload.vehicle_type,
+                        product=payload.product,
+                        created_at_client=payload.created_at_client,
+                        entity_id=payload.entity_id,
+                        working_day=payload.working_day
+                    )
             sess.add(data)
             sess.commit()
             sess.refresh(data)
