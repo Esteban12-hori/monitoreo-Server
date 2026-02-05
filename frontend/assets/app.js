@@ -1713,7 +1713,7 @@ function App() {
                     filter: 'drop-shadow(0 0 4px rgba(56, 189, 248, 0.5))'
                 }
             }),
-            'ServPulse'
+            'ServPulse 2.0'
         ),
         React.createElement('span', { className: 'pill' }, demo ? 'DEMO' : 'LIVE'),
         !demo && React.createElement('div', { style: { display: 'flex', gap: 10, marginLeft: 20 } },
@@ -1821,6 +1821,7 @@ function App() {
           React.createElement('button', { onClick: () => setShowChooser(false) }, 'Cerrar')
         )
       ),
+      React.createElement(DataMonitoringDashboard),
       React.createElement('div', { className: 'grid' },
         React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Uso total' }),
         React.createElement(MetricCard, { title: 'Memoria Usada', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${Math.round(latest.memory.used)} / ${Math.round(latest.memory.total)} MB` }),
@@ -1855,8 +1856,7 @@ function App() {
       editingThresholdsServerId && React.createElement(ThresholdModal, { 
           serverId: editingThresholdsServerId, 
           onClose: () => setEditingThresholdsServerId(null) 
-      }),
-      React.createElement(DataMonitoringDashboard)
+      })
     )
   );
 }
