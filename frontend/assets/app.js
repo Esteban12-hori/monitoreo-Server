@@ -1855,7 +1855,8 @@ function App() {
       editingThresholdsServerId && React.createElement(ThresholdModal, { 
           serverId: editingThresholdsServerId, 
           onClose: () => setEditingThresholdsServerId(null) 
-      })
+      }),
+      React.createElement(DataMonitoringDashboard)
     )
   );
 }
