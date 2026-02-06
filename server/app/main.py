@@ -203,21 +203,19 @@ def ensure_admin_assignments():
 
 @app.on_event("startup")
 def startup():
-    # Usar un lock o simplemente un try-except robusto
     try:
         ensure_recipient_type_column()
         ensure_link_column()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
-            # Deshabilitado temporalmente para evitar conflictos de concurrencia en reinicios rápidos
-            # ensure_default_users(sess)
         try:
             loop = asyncio.get_event_loop()
             loop.create_task(offline_monitor_loop())
         except RuntimeError:
-            # Si no hay loop (caso raro), no arrancar monitor async
             print("No se pudo iniciar offline_monitor_loop (sin event loop activo).")
+    except Exception as e:
+        print(f"Advertencia en startup: {e}")
 
 
 @app.get("/api/whatsapp/webhook")
@@ -450,8 +448,6 @@ async def whatsapp_webhook(request: Request):
         for msg in messages:
             _handle_whatsapp_command(sess, msg["phone"], msg["text"])
     return {"status": "ok"}
-    except Exception as e:
-        print(f"Advertencia en startup: {e}")
 
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
