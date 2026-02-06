@@ -21,8 +21,22 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig
+from .config import (
+    DB_PATH,
+    DEFAULT_ALERTS,
+    ALLOWED_ORIGINS,
+    DASHBOARD_TOKEN,
+    CACHE_MAX_ITEMS,
+    ALLOWED_USERS,
+    OFFLINE_CHECK_INTERVAL,
+    OFFLINE_MULTIPLIER,
+    OFFLINE_MIN_SECONDS,
+    WHATSAPP_VERIFY_TOKEN,
+    JWT_SECRET_KEY,
+    JWT_ALGORITHM,
+    JWT_EXPIRE_MINUTES,
+)
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, WhatsAppSession
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -32,8 +46,11 @@ from .schemas import (
     ServerDataMonitoringUpdateSchema,
     UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema
 )
-from .email_utils import send_alert_email
+from .email_utils import send_alert_email, send_offline_sms_alert, send_whatsapp_text
 import time
+import asyncio
+import jwt
+from datetime import timedelta
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -195,6 +212,244 @@ def startup():
             ensure_default_alerts(sess)
             # Deshabilitado temporalmente para evitar conflictos de concurrencia en reinicios rápidos
             # ensure_default_users(sess)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(offline_monitor_loop())
+        except RuntimeError:
+            # Si no hay loop (caso raro), no arrancar monitor async
+            print("No se pudo iniciar offline_monitor_loop (sin event loop activo).")
+
+
+@app.get("/api/whatsapp/webhook")
+def whatsapp_verify(hub_mode: str = "", hub_challenge: str = "", hub_verify_token: str = ""):
+    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
+        return Response(content=hub_challenge)
+    raise HTTPException(status_code=403, detail="Invalid verify token")
+
+
+def _parse_whatsapp_message(body: dict) -> list[dict]:
+    messages = []
+    for entry in body.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for msg in value.get("messages", []):
+                contacts = value.get("contacts", [])
+                phone = contacts[0]["wa_id"] if contacts else msg.get("from")
+                text = ""
+                if msg.get("type") == "text":
+                    text = msg["text"]["body"]
+                messages.append(
+                    {
+                        "phone": phone,
+                        "text": text.strip(),
+                    }
+                )
+    return messages
+
+
+def _get_or_create_whatsapp_session(sess: Session, phone: str) -> WhatsAppSession:
+    wa = (
+        sess.execute(select(WhatsAppSession).where(WhatsAppSession.phone == phone))
+        .scalars()
+        .first()
+    )
+    if not wa:
+        wa = WhatsAppSession(phone=phone)
+        sess.add(wa)
+        sess.flush()
+    return wa
+
+
+def _handle_whatsapp_command(sess: Session, phone: str, text: str):
+    normalized = text.strip().lower()
+
+    if normalized in ("help", "ayuda", "h"):
+        send_whatsapp_text(
+            phone,
+            (
+                "Bienvenido a ServPulse.\n\n"
+                "Comandos disponibles:\n"
+                "1) LOGIN correo password\n"
+                "   - Autentica tu cuenta.\n"
+                "2) LIST\n"
+                "   - Lista tus servidores disponibles.\n"
+                "3) STATUS n\n"
+                "   - Estado detallado del servidor número n.\n"
+                "4) STATUS ALL\n"
+                "   - Resumen de todos los servidores.\n"
+            ),
+        )
+        return
+
+    parts = text.strip().split()
+    if len(parts) >= 3 and parts[0].lower() == "login":
+        email = parts[1]
+        password = " ".join(parts[2:])
+        user = (
+            sess.execute(select(User).where(User.email == email))
+            .scalars()
+            .first()
+        )
+        if not user or not verify_password(password, user.password_hash):
+            send_whatsapp_text(phone, "Credenciales inválidas. Intente nuevamente.")
+            return
+
+        wa = _get_or_create_whatsapp_session(sess, phone)
+        wa.user_id = user.id
+        wa.jwt_token = create_jwt_for_user(user.id)
+        sess.commit()
+
+        assigned_servers = (
+            sess.execute(
+                select(Server)
+                .join(UserServerLink, Server.id == UserServerLink.server_id)
+                .where(UserServerLink.user_id == user.id)
+            )
+            .scalars()
+            .all()
+        )
+        if not assigned_servers:
+            send_whatsapp_text(phone, "No tienes servidores asignados.")
+            return
+
+        lines = ["Servidores disponibles:"]
+        for idx, srv in enumerate(assigned_servers, start=1):
+            lines.append(f"{idx} - {srv.server_id}")
+        send_whatsapp_text(phone, "\n".join(lines))
+        return
+
+    if normalized == "list":
+        wa = _get_or_create_whatsapp_session(sess, phone)
+        if not wa.user_id:
+            send_whatsapp_text(phone, "Primero ejecuta: LOGIN correo password")
+            return
+        user = sess.get(User, wa.user_id)
+        assigned_servers = (
+            sess.execute(
+                select(Server)
+                .join(UserServerLink, Server.id == UserServerLink.server_id)
+                .where(UserServerLink.user_id == user.id)
+            )
+            .scalars()
+            .all()
+        )
+        if not assigned_servers:
+            send_whatsapp_text(phone, "No tienes servidores asignados.")
+            return
+        lines = ["Servidores disponibles:"]
+        for idx, srv in enumerate(assigned_servers, start=1):
+            lines.append(f"{idx} - {srv.server_id}")
+        send_whatsapp_text(phone, "\n".join(lines))
+        return
+
+    if normalized.startswith("status "):
+        wa = _get_or_create_whatsapp_session(sess, phone)
+        if not wa.user_id:
+            send_whatsapp_text(phone, "Primero ejecuta: LOGIN correo password")
+            return
+        arg = normalized.split(" ", 1)[1].strip()
+        user = sess.get(User, wa.user_id)
+        assigned_servers = (
+            sess.execute(
+                select(Server)
+                .join(UserServerLink, Server.id == UserServerLink.server_id)
+                .where(UserServerLink.user_id == user.id)
+            )
+            .scalars()
+            .all()
+        )
+        if not assigned_servers:
+            send_whatsapp_text(phone, "No tienes servidores asignados.")
+            return
+
+        if arg in ("all", "todos"):
+            lines = []
+            for srv in assigned_servers:
+                last_metric = (
+                    sess.execute(
+                        select(Metric)
+                        .where(Metric.server_id == srv.server_id)
+                        .order_by(Metric.ts.desc())
+                        .limit(1)
+                    )
+                    .scalars()
+                    .first()
+                )
+                if not last_metric:
+                    status_icon = "❌"
+                    cpu = "-"
+                    mem = "-"
+                    disk = "-"
+                else:
+                    status_icon = "✅"
+                    cpu = f"{last_metric.cpu_total:.1f}%"
+                    mem = f"{(last_metric.mem_used / max(last_metric.mem_total, 1) * 100):.1f}%"
+                    disk = f"{last_metric.disk_percent:.1f}%"
+                lines.append(
+                    f"{status_icon} {srv.server_id} | CPU {cpu} | MEM {mem} | DISK {disk}"
+                )
+            send_whatsapp_text(phone, "\n".join(lines) or "Sin datos.")
+            return
+
+        try:
+            idx = int(arg)
+        except ValueError:
+            send_whatsapp_text(phone, "Uso: STATUS n  o  STATUS ALL")
+            return
+
+        if idx < 1 or idx > len(assigned_servers):
+            send_whatsapp_text(phone, "Número de servidor inválido.")
+            return
+
+        srv = assigned_servers[idx - 1]
+        last_metric = (
+            sess.execute(
+                select(Metric)
+                .where(Metric.server_id == srv.server_id)
+                .order_by(Metric.ts.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if not last_metric:
+            send_whatsapp_text(phone, f"No hay datos recientes para {srv.server_id}.")
+            return
+
+        cpu = last_metric.cpu_total
+        mem_pct = (
+            last_metric.mem_used / max(last_metric.mem_total, 1) * 100
+            if last_metric.mem_total
+            else 0
+        )
+        disk_pct = last_metric.disk_percent or 0
+
+        status_lines = [
+            f"Servidor: {srv.server_id}",
+            "Estado: ONLINE",
+            f"CPU: {cpu:.1f}%",
+            f"Memoria: {mem_pct:.1f}%",
+            f"Disco: {disk_pct:.1f}%",
+        ]
+        send_whatsapp_text(phone, "\n".join(status_lines))
+        return
+
+    send_whatsapp_text(
+        phone,
+        "Comando no reconocido. Escribe AYUDA para ver los comandos disponibles.",
+    )
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    body = await request.json()
+    messages = _parse_whatsapp_message(body)
+    if not messages:
+        return {"status": "ok"}
+    with Session(engine) as sess:
+        for msg in messages:
+            _handle_whatsapp_command(sess, msg["phone"], msg["text"])
+    return {"status": "ok"}
     except Exception as e:
         print(f"Advertencia en startup: {e}")
 
@@ -208,6 +463,98 @@ _threshold_cache: dict[str, dict] = {}
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
 ALERT_COOLDOWN = 3600  # 1 hora
+
+
+def check_offline_servers():
+    """
+    Revisa todos los servidores y dispara alerta 'offline' (email + SMS) si no reportan.
+    """
+    now_ts = time.time()
+    with Session(engine) as sess:
+        servers = sess.execute(select(Server)).scalars().all()
+        for srv in servers:
+            last_metric = sess.execute(
+                select(Metric)
+                .where(Metric.server_id == srv.server_id)
+                .order_by(Metric.ts.desc())
+                .limit(1)
+            ).scalars().first()
+
+            if not last_metric:
+                # Nunca ha reportado: considerar offline solo si el servidor no es recién creado
+                continue
+
+            last_ts = last_metric.ts.timestamp()
+            elapsed = now_ts - last_ts
+
+            interval = srv.report_interval or 2400
+            expected_max_delay = max(interval * OFFLINE_MULTIPLIER, OFFLINE_MIN_SECONDS)
+
+            if elapsed < expected_max_delay:
+                continue
+
+            key = (srv.server_id, "offline")
+            last_sent = _alert_state.get(key, 0)
+            if now_ts - last_sent < ALERT_COOLDOWN:
+                continue
+
+            try:
+                recipients, applied_rules = get_alert_recipients(sess, srv, "offline")
+                print(f"[ALERT] Servidor offline detectado para {srv.server_id}. Reglas aplicadas: {applied_rules}")
+                # current_value = minutos sin reportar
+                minutes_down = round(elapsed / 60, 1)
+                send_alert_email(
+                    srv.server_id,
+                    "Servidor Offline",
+                    minutes_down,
+                    expected_max_delay / 60.0,
+                    recipients,
+                    full_metrics={},
+                )
+                send_offline_sms_alert(srv.server_id)
+                # Enviar WhatsApp si hay teléfono de alerta configurado
+                try:
+                    # Se reutiliza TWILIO_ALERT_PHONE o se puede configurar un número específico por servidor en el futuro
+                    # Aquí solo enviamos un texto genérico
+                    send_whatsapp_text(
+                        to_phone="+" + "56966791438",
+                        body=f"⚠️ Servidor {srv.server_id} no responde desde hace {minutes_down} minutos.",
+                    )
+                except Exception as e:
+                    print(f"Error enviando WhatsApp offline para {srv.server_id}: {e}")
+                _alert_state[key] = now_ts
+            except Exception as e:
+                print(f"Error enviando alerta offline para {srv.server_id}: {e}")
+
+
+async def offline_monitor_loop():
+    """
+    Bucle en segundo plano que ejecuta check_offline_servers periódicamente.
+    """
+    while True:
+        try:
+            check_offline_servers()
+        except Exception as e:
+            print(f"Error en offline_monitor_loop: {e}")
+        await asyncio.sleep(OFFLINE_CHECK_INTERVAL)
+
+
+def create_jwt_for_user(user_id: int) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    payload = {"sub": str(user_id), "exp": expire}
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return token
+
+
+def verify_jwt_token(token: str) -> Optional[int]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        sub = payload.get("sub")
+        if sub is None:
+            return None
+        return int(sub)
+    except Exception:
+        return None
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -279,13 +626,16 @@ def login(request: Request, payload: LoginSchema):
         # Guardar sesión en DB
         new_session = UserSession(token=token, user_id=user.id)
         sess.add(new_session)
+        cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user.id)).scalar_one_or_none()
+        can_view_dm = cfg.enabled if cfg else False
         sess.commit()
         
         return {
             "token": token, 
             "email": user.email, 
             "name": user.name, 
-            "is_admin": user.is_admin
+            "is_admin": user.is_admin,
+            "can_view_data_monitoring": can_view_dm
         }
 
 @app.post("/api/logout")
@@ -305,7 +655,20 @@ def logout(x_dashboard_token: Optional[str] = Header(None)):
 def list_users(user: dict = Depends(require_admin)):
     with Session(engine) as sess:
         users = sess.execute(select(User)).scalars().all()
-        return users
+        configs = sess.execute(select(DataMonitoringUserConfig)).scalars().all()
+        cfg_map = {c.user_id: c.enabled for c in configs}
+        result = []
+        for u in users:
+            result.append(UserResponseSchema(
+                id=u.id,
+                email=u.email,
+                name=u.name,
+                is_admin=u.is_admin,
+                receive_alerts=u.receive_alerts,
+                can_view_data_monitoring=cfg_map.get(u.id, False),
+                created_at=u.created_at
+            ))
+        return result
 
 @app.post("/api/admin/users", response_model=UserResponseSchema)
 def create_user(payload: UserCreateSchema, user: dict = Depends(require_admin)):
@@ -322,9 +685,21 @@ def create_user(payload: UserCreateSchema, user: dict = Depends(require_admin)):
             receive_alerts=payload.receive_alerts
         )
         sess.add(new_user)
+        sess.flush()
+        if payload.can_view_data_monitoring:
+            cfg = DataMonitoringUserConfig(user_id=new_user.id, enabled=True)
+            sess.add(cfg)
         sess.commit()
-        sess.refresh(new_user)
-        return new_user
+        cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == new_user.id)).scalar_one_or_none()
+        return UserResponseSchema(
+            id=new_user.id,
+            email=new_user.email,
+            name=new_user.name,
+            is_admin=new_user.is_admin,
+            receive_alerts=new_user.receive_alerts,
+            can_view_data_monitoring=cfg.enabled if cfg else False,
+            created_at=new_user.created_at
+        )
 
 @app.delete("/api/admin/users/{user_id}")
 def delete_user(user_id: int, user: dict = Depends(require_admin)):
@@ -357,10 +732,25 @@ def update_user(user_id: int, payload: UserUpdateSchema, user: dict = Depends(re
             u.receive_alerts = payload.receive_alerts
         if payload.password is not None:
             u.password_hash = get_password_hash(payload.password)
+        if payload.can_view_data_monitoring is not None:
+            cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user_id)).scalar_one_or_none()
+            if not cfg:
+                cfg = DataMonitoringUserConfig(user_id=user_id, enabled=payload.can_view_data_monitoring)
+                sess.add(cfg)
+            else:
+                cfg.enabled = payload.can_view_data_monitoring
             
         sess.commit()
-        sess.refresh(u)
-        return u
+        cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user_id)).scalar_one_or_none()
+        return UserResponseSchema(
+            id=u.id,
+            email=u.email,
+            name=u.name,
+            is_admin=u.is_admin,
+            receive_alerts=u.receive_alerts,
+            can_view_data_monitoring=cfg.enabled if cfg else False,
+            created_at=u.created_at
+        )
 
 @app.post("/api/admin/users/{user_id}/servers")
 def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: dict = Depends(require_admin)):

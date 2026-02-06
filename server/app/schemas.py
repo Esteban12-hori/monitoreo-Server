@@ -62,11 +62,13 @@ class UserCreateSchema(BaseModel):
     name: Optional[str] = None
     is_admin: bool = False
     receive_alerts: bool = False
+    can_view_data_monitoring: bool = False
 
 class UserUpdateSchema(BaseModel):
     name: Optional[str] = None
     is_admin: Optional[bool] = None
     receive_alerts: Optional[bool] = None
+    can_view_data_monitoring: Optional[bool] = None
     password: Optional[str] = Field(None, min_length=6)
 
 class UserResponseSchema(BaseModel):
@@ -75,6 +77,7 @@ class UserResponseSchema(BaseModel):
     name: Optional[str]
     is_admin: bool
     receive_alerts: bool
+    can_view_data_monitoring: bool = False
     created_at: Optional[datetime]
 
     class Config:

@@ -2,9 +2,18 @@ import requests
 import json
 import logging
 from .config import (
-    EMAIL_API_KEY, EMAIL_API_SECRET, 
-    EMAIL_SENDER_EMAIL, EMAIL_SENDER_NAME, 
-    EMAIL_RECEIVERS, EMAIL_SUBJECT_PREFIX
+    EMAIL_API_KEY,
+    EMAIL_API_SECRET,
+    EMAIL_SENDER_EMAIL,
+    EMAIL_SENDER_NAME,
+    EMAIL_RECEIVERS,
+    EMAIL_SUBJECT_PREFIX,
+    TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN,
+    TWILIO_VERIFY_SERVICE_SID,
+    TWILIO_ALERT_PHONE,
+    WHATSAPP_API_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,3 +198,64 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
             
     except Exception as e:
         logger.error(f"Excepción al enviar email: {e}")
+
+
+def send_offline_sms_alert(server_id: str, to_phone: str | None = None):
+    """
+    Envía un SMS urgente usando Twilio Verify cuando un servidor no responde.
+    Usa las variables de entorno:
+    - TWILIO_ACCOUNT_SID
+    - TWILIO_AUTH_TOKEN
+    - TWILIO_VERIFY_SERVICE_SID
+    - TWILIO_ALERT_PHONE
+    """
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_VERIFY_SERVICE_SID and TWILIO_ALERT_PHONE):
+        logger.warning("Twilio no configurado correctamente. No se enviará SMS de servidor offline.")
+        return
+
+    to = to_phone or TWILIO_ALERT_PHONE
+
+    url = f"https://verify.twilio.com/v2/Services/{TWILIO_VERIFY_SERVICE_SID}/Verifications"
+    data = {
+        "To": to,
+        "Channel": "sms",
+    }
+
+    try:
+        resp = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=10)
+        if resp.status_code in (200, 201):
+            logger.info(f"SMS de servidor offline enviado a {to} para {server_id}")
+        else:
+            logger.error(f"Error enviando SMS offline ({server_id}) {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"Excepción al enviar SMS offline ({server_id}): {e}")
+
+
+def send_whatsapp_text(to_phone: str, body: str):
+    """
+    Envía un mensaje de texto vía WhatsApp Cloud API.
+    """
+    if not (WHATSAPP_API_TOKEN and WHATSAPP_PHONE_NUMBER_ID):
+        logger.warning("WhatsApp API no configurada. No se enviará mensaje.")
+        return
+
+    url = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "text",
+        "text": {"body": body},
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=10)
+        if resp.status_code not in (200, 201):
+            logger.error(f"Error enviando WhatsApp ({to_phone}): {resp.status_code} - {resp.text}")
+        else:
+            logger.info(f"WhatsApp enviado a {to_phone}")
+    except Exception as e:
+        logger.error(f"Excepción al enviar WhatsApp a {to_phone}: {e}")

@@ -106,6 +106,14 @@ class User(Base):
     servers = relationship("Server", secondary="user_server_link", viewonly=True)
 
 
+class DataMonitoringUserConfig(Base):
+    __tablename__ = "data_monitoring_user_config"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    enabled = Column(Boolean, default=False)
+
+
 class UserSession(Base):
     __tablename__ = "sessions"
     token = Column(String(255), primary_key=True)
@@ -114,6 +122,16 @@ class UserSession(Base):
     
     user = relationship("User")
 
+
+class WhatsAppSession(Base):
+    __tablename__ = "whatsapp_sessions"
+    id = Column(Integer, primary_key=True)
+    phone = Column(String(50), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    jwt_token = Column(String(512), nullable=True)
+    last_message_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
 
 class ServerThreshold(Base):
     __tablename__ = "server_thresholds"

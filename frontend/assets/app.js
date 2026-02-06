@@ -946,6 +946,7 @@ function UserEditModal({ user, onClose }) {
         name: user.name || '', 
         is_admin: user.is_admin, 
         receive_alerts: user.receive_alerts,
+        can_view_data_monitoring: user.can_view_data_monitoring,
         password: '' 
     });
     const [loading, setLoading] = useState(false);
@@ -956,7 +957,8 @@ function UserEditModal({ user, onClose }) {
             const payload = {
                 name: values.name,
                 is_admin: values.is_admin,
-                receive_alerts: values.receive_alerts
+                receive_alerts: values.receive_alerts,
+                can_view_data_monitoring: values.can_view_data_monitoring
             };
             if (values.password && values.password.length >= 6) {
                 payload.password = values.password;
@@ -1018,6 +1020,14 @@ function UserEditModal({ user, onClose }) {
                     }),
                     'Recibir Alertas'
                 ),
+                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                    React.createElement('input', { 
+                        type: 'checkbox', 
+                        checked: values.can_view_data_monitoring, 
+                        onChange: e => setValues({...values, can_view_data_monitoring: e.target.checked}) 
+                    }),
+                    'Ver Monitoreo Datos'
+                ),
                 React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 } },
                     React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
                     React.createElement('button', { onClick: handleSave, disabled: loading }, loading ? 'Guardando...' : 'Guardar')
@@ -1033,7 +1043,7 @@ function AdminPanel() {
     const [recipients, setRecipients] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false });
+    const [newUser, setNewUser] = useState({ email: '', password: '', name: '', is_admin: false, receive_alerts: false, can_view_data_monitoring: false });
     const [newRecipient, setNewRecipient] = useState({ email: '', name: '', recipient_type: 'OTROS' });
     const [assigningUser, setAssigningUser] = useState(null);
     const [editingUser, setEditingUser] = useState(null);
@@ -1098,7 +1108,7 @@ function AdminPanel() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newUser)
             });
-            setNewUser({ email: '', password: '', name: '', is_admin: false });
+            setNewUser({ email: '', password: '', name: '', is_admin: false, receive_alerts: false, can_view_data_monitoring: false });
             loadUsers();
         } catch (e) {
             alert('Error creando usuario: ' + e.message);
@@ -1196,6 +1206,14 @@ function AdminPanel() {
                             }),
                             'Recibir Alertas'
                         ),
+                        React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 5, color: '#fff' } },
+                            React.createElement('input', { 
+                                type: 'checkbox', 
+                                checked: newUser.can_view_data_monitoring, 
+                                onChange: e => setNewUser({...newUser, can_view_data_monitoring: e.target.checked}) 
+                            }),
+                            'Ver Monitoreo Datos'
+                        ),
                         React.createElement('button', { onClick: handleCreate }, 'Crear Usuario')
                     )
                 ),
@@ -1209,6 +1227,7 @@ function AdminPanel() {
                                 React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Rol'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Alertas'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Mon. Datos'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Acciones')
                             )
                         ),
@@ -1220,6 +1239,7 @@ function AdminPanel() {
                                     React.createElement('td', { style: { padding: 8 } }, u.name || '-'),
                                     React.createElement('td', { style: { padding: 8 } }, u.is_admin ? 'Admin' : 'User'),
                                     React.createElement('td', { style: { padding: 8 } }, u.receive_alerts ? 'Sí' : 'No'),
+                                    React.createElement('td', { style: { padding: 8 } }, u.can_view_data_monitoring ? 'Sí' : 'No'),
                                     React.createElement('td', { style: { padding: 8, display: 'flex', gap: 5 } },
                                         React.createElement('button', { 
                                             style: { backgroundColor: '#3b82f6', fontSize: '0.8rem', padding: '4px 8px' },
@@ -1439,7 +1459,7 @@ function BarChart({ labels, data, label, color='#22d3ee' }) {
   return React.createElement('canvas', { height: 100, ref });
 }
 
-function DataMonitoringDashboard({ currentServer }) {
+function DataMonitoringDashboard({ currentServer, userInfo }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1492,6 +1512,17 @@ function DataMonitoringDashboard({ currentServer }) {
     })
     .catch(err => alert('Error descargando CSV: ' + err.message));
   };
+
+  if (!userInfo) {
+    return null;
+  }
+
+  if (!userInfo.is_admin && !userInfo.can_view_data_monitoring) {
+    return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
+      React.createElement('div', { className: 'title', style: { marginBottom: 8 } }, 'Monitoreo de Datos (Ingestión)'),
+      React.createElement('div', { style: { color: '#94a3b8' } }, 'No tienes permiso para ver este dashboard. Pide acceso a un administrador.')
+    );
+  }
 
   if (!currentServer) {
     return null;
@@ -1858,7 +1889,7 @@ function App() {
           React.createElement('button', { onClick: () => setShowChooser(false) }, 'Cerrar')
         )
       ),
-      React.createElement(DataMonitoringDashboard, { currentServer }),
+      React.createElement(DataMonitoringDashboard, { currentServer, userInfo }),
       React.createElement('div', { className: 'grid' },
         React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Uso total' }),
         React.createElement(MetricCard, { title: 'Memoria Usada', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${Math.round(latest.memory.used)} / ${Math.round(latest.memory.total)} MB` }),
