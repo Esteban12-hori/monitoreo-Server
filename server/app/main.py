@@ -22,13 +22,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
+    ServerDataMonitoringUpdateSchema,
     UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema
 )
 from .email_utils import send_alert_email
@@ -436,6 +437,8 @@ def register_server(payload: RegisterServerSchema):
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
+        configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
+        cfg_map = {c.server_id: c.enabled for c in configs}
         db_user = sess.get(User, user["user_id"])
         if db_user and not db_user.is_admin:
             servers = [link.server for link in db_user.server_links if link.server]
@@ -446,7 +449,8 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
                 "server_id": s.server_id, 
                 "created_at": str(s.created_at), 
                 "group_name": s.group_name,
-                "report_interval": s.report_interval
+                "report_interval": s.report_interval,
+                "data_monitoring_enabled": cfg_map.get(s.server_id, False)
             } 
             for s in servers
         ]
@@ -477,6 +481,22 @@ def update_server_config(server_id: str, payload: ServerConfigUpdateSchema, user
         srv.report_interval = payload.report_interval
         sess.commit()
         return {"status": "updated", "server_id": server_id, "report_interval": srv.report_interval}
+
+
+@app.put("/api/admin/servers/{server_id}/data-monitoring")
+def update_server_data_monitoring(server_id: str, payload: ServerDataMonitoringUpdateSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Servidor no encontrado")
+        cfg = sess.execute(select(DataMonitoringServerConfig).where(DataMonitoringServerConfig.server_id == server_id)).scalar_one_or_none()
+        if not cfg:
+            cfg = DataMonitoringServerConfig(server_id=server_id, enabled=payload.enabled)
+            sess.add(cfg)
+        else:
+            cfg.enabled = payload.enabled
+        sess.commit()
+        return {"status": "updated", "server_id": server_id, "enabled": cfg.enabled}
 
 
 # --- Destinatarios de Alertas (Alert Recipients) ---

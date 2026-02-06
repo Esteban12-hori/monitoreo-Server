@@ -31,6 +31,14 @@ class Server(Base):
     assigned_users = relationship("User", secondary="user_server_link", viewonly=True)
 
 
+class DataMonitoringServerConfig(Base):
+    __tablename__ = "data_monitoring_server_config"
+
+    id = Column(Integer, primary_key=True)
+    server_id = Column(String(255), ForeignKey("servers.server_id"), unique=True, nullable=False)
+    enabled = Column(Boolean, default=False)
+
+
 class AlertRule(Base):
     __tablename__ = "alert_rules"
     id = Column(Integer, primary_key=True)

@@ -302,7 +302,7 @@ function GroupSelectionModal({ groups, onSelect, onClose }) {
     );
 }
 
-function ServerGroupRow({ server, onUpdate, selected, onToggle, onOpenPicker }) {
+function ServerGroupRow({ server, onUpdate, selected, onToggle, onOpenPicker, onToggleDataMonitoring }) {
     const [group, setGroup] = useState(server.group_name || '');
     const [saving, setSaving] = useState(false);
     
@@ -361,6 +361,14 @@ function ServerGroupRow({ server, onUpdate, selected, onToggle, onOpenPicker }) 
                     }
                 }, '📂')
             )
+        ),
+        React.createElement('td', { style: { padding: '12px 16px', textAlign: 'center' } },
+            React.createElement('input', {
+                type: 'checkbox',
+                checked: !!server.data_monitoring_enabled,
+                onChange: () => onToggleDataMonitoring(server.server_id, !server.data_monitoring_enabled),
+                style: { transform: 'scale(1.2)', cursor: 'pointer' }
+            })
         ),
         React.createElement('td', { style: { padding: '12px 16px' } },
             hasChanged && React.createElement('button', { 
@@ -467,6 +475,19 @@ function ServerGroupManager() {
         setShowGroupModal(true);
     };
 
+    const toggleDataMonitoring = async (sid, enabled) => {
+        try {
+            await fetchJSON(`/api/admin/servers/${sid}/data-monitoring`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            setServers(prev => prev.map(s => s.server_id === sid ? { ...s, data_monitoring_enabled: enabled } : s));
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
     const uniqueGroups = [...new Set([
         ...servers.map(s => s.group_name).filter(g => g),
         ...savedGroups
@@ -537,6 +558,7 @@ function ServerGroupManager() {
                         ),
                         React.createElement('th', { style: { padding: '8px 16px' } }, 'Servidor'),
                         React.createElement('th', { style: { padding: '8px 16px' } }, 'Grupo'),
+                        React.createElement('th', { style: { padding: '8px 16px' } }, 'Mon. Datos'),
                         React.createElement('th', { style: { padding: '8px 16px', width: 120 } }, 'Acción')
                     )
                 ),
@@ -547,7 +569,8 @@ function ServerGroupManager() {
                         onUpdate: updateGroup,
                         selected: selectedIds.includes(s.server_id),
                         onToggle: toggleId,
-                        onOpenPicker: openPickerForServer
+                        onOpenPicker: openPickerForServer,
+                        onToggleDataMonitoring: toggleDataMonitoring
                     }))
                 )
             )
@@ -1416,7 +1439,7 @@ function BarChart({ labels, data, label, color='#22d3ee' }) {
   return React.createElement('canvas', { height: 100, ref });
 }
 
-function DataMonitoringDashboard() {
+function DataMonitoringDashboard({ currentServer }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1469,6 +1492,19 @@ function DataMonitoringDashboard() {
     })
     .catch(err => alert('Error descargando CSV: ' + err.message));
   };
+
+  if (!currentServer) {
+    return null;
+  }
+
+  if (!currentServer.data_monitoring_enabled) {
+    return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+        React.createElement('div', { className: 'title' }, 'Monitoreo de Datos (Ingestión)'),
+      ),
+      React.createElement('div', { style: { color: '#94a3b8' } }, 'Este dashboard está desactivado para el servidor seleccionado. Actívalo desde Admin → Grupos de Servidores.')
+    );
+  }
 
   return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 } },
@@ -1822,7 +1858,7 @@ function App() {
           React.createElement('button', { onClick: () => setShowChooser(false) }, 'Cerrar')
         )
       ),
-      React.createElement(DataMonitoringDashboard),
+      React.createElement(DataMonitoringDashboard, { currentServer }),
       React.createElement('div', { className: 'grid' },
         React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Uso total' }),
         React.createElement(MetricCard, { title: 'Memoria Usada', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${Math.round(latest.memory.used)} / ${Math.round(latest.memory.total)} MB` }),
