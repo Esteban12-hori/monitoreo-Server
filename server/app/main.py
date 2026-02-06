@@ -22,7 +22,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, ALLOWED_USERS
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
