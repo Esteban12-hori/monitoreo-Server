@@ -43,7 +43,7 @@ EMAIL_API_KEY = os.getenv("EMAIL_API_KEY", "4cc4901cb8203fb46673d8e641d947b6")
 EMAIL_API_SECRET = os.getenv("EMAIL_API_SECRET", "3c394600895a3466ab0b5aba092ed91d")
 EMAIL_SENDER_EMAIL = os.getenv("EMAIL_SENDER_EMAIL", "developer@wingsoft.com")
 EMAIL_SENDER_NAME = os.getenv("EMAIL_SENDER_NAME", "DevOps Wingsoft")
-EMAIL_RECEIVERS = os.getenv("EMAIL_RECEIVERS", "jguajardo@wingsoft.com,developer@wingsoft.com").split(",")
+EMAIL_RECEIVERS = os.getenv("EMAIL_RECEIVERS", "jguajardo@wingsoft.com").split(",")
 
 # Tema de los correos (Subject Prefix)
 EMAIL_SUBJECT_PREFIX = os.getenv("EMAIL_SUBJECT_PREFIX", "[Monitoreo]")
