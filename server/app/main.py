@@ -480,6 +480,24 @@ def require_admin(user: dict = Depends(get_current_user_from_token)):
         raise HTTPException(status_code=403, detail="Requiere privilegios de administrador")
     return user
 
+
+def require_data_monitoring_access(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+            raise HTTPException(status_code=401, detail="User not found")
+        cfg = sess.execute(
+            select(DataMonitoringUserConfig).where(
+                DataMonitoringUserConfig.user_id == db_user.id
+            )
+        ).scalar_one_or_none()
+        if not (db_user.is_admin or (cfg and cfg.enabled)):
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para ver el dashboard de datos",
+            )
+    return user
+
 @app.post("/api/login")
 @limiter.limit("5/minute")
 def login(request: Request, payload: LoginSchema):
@@ -1279,7 +1297,9 @@ def create_data_monitoring(payload: DataMonitoringSchema):
 
 
 @app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
-def list_data_monitoring(limit: int = 50, user: dict = Depends(get_current_user_from_token)):
+def list_data_monitoring(
+    limit: int = 50, user: dict = Depends(require_data_monitoring_access)
+):
     with Session(engine) as sess:
         data = sess.execute(
             select(DataMonitoring)
@@ -1307,7 +1327,7 @@ def list_data_monitoring(limit: int = 50, user: dict = Depends(get_current_user_
 
 
 @app.get("/api/data-monitoring/export")
-def export_data_monitoring(user: dict = Depends(get_current_user_from_token)):
+def export_data_monitoring(user: dict = Depends(require_data_monitoring_access)):
     with Session(engine) as sess:
         query = select(DataMonitoring).order_by(DataMonitoring.id.desc())
         results = sess.execute(query).scalars().all()

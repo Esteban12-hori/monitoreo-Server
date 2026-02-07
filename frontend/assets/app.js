@@ -494,7 +494,7 @@ function ServerGroupManager() {
     ])].sort();
 
     return React.createElement('div', { className: 'card', style: { marginBottom: 20, border: '1px solid #334155', background: '#1e293b' } },
-        React.createElement('div', { className: 'title', style: { borderBottom: '1px solid #334155', paddingBottom: 10, marginBottom: 10 } }, 'Gestión de Grupos'),
+        React.createElement('div', { className: 'title', style: { borderBottom: '1px solid #334155', paddingBottom: 10, marginBottom: 10 } }, 'Gestión de Grupos y Dashboard Postman'),
         
         // Modal de selección de grupos
         showGroupModal && React.createElement(GroupSelectionModal, {
@@ -558,7 +558,7 @@ function ServerGroupManager() {
                         ),
                         React.createElement('th', { style: { padding: '8px 16px' } }, 'Servidor'),
                         React.createElement('th', { style: { padding: '8px 16px' } }, 'Grupo'),
-                        React.createElement('th', { style: { padding: '8px 16px' } }, 'Mon. Datos'),
+                        React.createElement('th', { style: { padding: '8px 16px' } }, 'Dashboard Postman'),
                         React.createElement('th', { style: { padding: '8px 16px', width: 120 } }, 'Acción')
                     )
                 ),
@@ -1026,7 +1026,7 @@ function UserEditModal({ user, onClose }) {
                         checked: values.can_view_data_monitoring, 
                         onChange: e => setValues({...values, can_view_data_monitoring: e.target.checked}) 
                     }),
-                    'Ver Monitoreo Datos'
+                    'Ver dashboard Postman'
                 ),
                 React.createElement('div', { style: { display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 } },
                     React.createElement('button', { onClick: onClose, style: { background: '#444' } }, 'Cancelar'),
@@ -1212,7 +1212,7 @@ function AdminPanel() {
                                 checked: newUser.can_view_data_monitoring, 
                                 onChange: e => setNewUser({...newUser, can_view_data_monitoring: e.target.checked}) 
                             }),
-                            'Ver Monitoreo Datos'
+                            'Ver dashboard Postman'
                         ),
                         React.createElement('button', { onClick: handleCreate }, 'Crear Usuario')
                     )
@@ -1227,7 +1227,7 @@ function AdminPanel() {
                                 React.createElement('th', { style: { padding: 8 } }, 'Nombre'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Rol'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Alertas'),
-                                React.createElement('th', { style: { padding: 8 } }, 'Mon. Datos'),
+                                React.createElement('th', { style: { padding: 8 } }, 'Dashboard Postman'),
                                 React.createElement('th', { style: { padding: 8 } }, 'Acciones')
                             )
                         ),
@@ -1519,7 +1519,7 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
 
   if (!userInfo.is_admin && !userInfo.can_view_data_monitoring) {
     return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
-      React.createElement('div', { className: 'title', style: { marginBottom: 8 } }, 'Monitoreo de Datos (Ingestión)'),
+      React.createElement('div', { className: 'title', style: { marginBottom: 8 } }, 'Dashboard Postman (Datos Ingestados)'),
       React.createElement('div', { style: { color: '#94a3b8' } }, 'No tienes permiso para ver este dashboard. Pide acceso a un administrador.')
     );
   }
@@ -1531,7 +1531,7 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   if (!currentServer.data_monitoring_enabled) {
     return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
       React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
-        React.createElement('div', { className: 'title' }, 'Monitoreo de Datos (Ingestión)'),
+        React.createElement('div', { className: 'title' }, 'Dashboard Postman (Datos Ingestados)'),
       ),
       React.createElement('div', { style: { color: '#94a3b8' } }, 'Este dashboard está desactivado para el servidor seleccionado. Actívalo desde Admin → Grupos de Servidores.')
     );
@@ -1539,7 +1539,7 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
 
   return React.createElement('div', { className: 'card', style: { marginTop: 16 } },
     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 } },
-      React.createElement('div', { className: 'title' }, 'Monitoreo de Datos (Ingestión)'),
+      React.createElement('div', { className: 'title' }, 'Dashboard Postman (Datos Ingestados)'),
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
         React.createElement('button', { onClick: handleDownload, style: { background: '#10b981', border: 'none', color: 'white', cursor: 'pointer', borderRadius: 4, padding: '4px 12px', fontSize: '0.85rem' } }, 'Descargar CSV'),
         React.createElement('button', { onClick: fetchData, style: { background: 'none', border: '1px solid #444', color: '#ccc', cursor: 'pointer', borderRadius: 4, padding: '4px 8px' } }, 'Refrescar')
@@ -1829,10 +1829,10 @@ function App() {
         React.createElement('div', { style: { color: '#ef4444' } }, status.message || 'Sin datos en vivo'),
         React.createElement('div', { className: 'muted' }, 'Verifique token, TLS y disponibilidad del backend')
       ),
-      React.createElement('div', { className: 'card', style: { marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
+        React.createElement('div', { className: 'card', style: { marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
         React.createElement('label', null, 'Servidor: '),
         React.createElement('select', { value: selected, onChange: e => setSelected(e.target.value) },
-          servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, s.server_id))
+          servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, s.group_name ? `${s.server_id} (${s.group_name})` : s.server_id))
         ),
         React.createElement('button', { onClick: () => setShowChooser(v => !v) }, 'Cambiar servidor'),
         selected && React.createElement('div', { style: { marginLeft: 10, padding: '4px 8px', background: '#334155', borderRadius: 4, fontSize: '0.8rem' } },
@@ -1878,7 +1878,10 @@ function App() {
                 },
                 onClick: () => { setSelected(s.server_id); setShowChooser(false); }
               }, 
-                React.createElement('span', { style: { fontWeight: 500 } }, s.server_id),
+                React.createElement('div', null,
+                  React.createElement('span', { style: { fontWeight: 500 } }, s.server_id),
+                  React.createElement('div', { className: 'muted', style: { fontSize: '0.75rem', marginTop: 4 } }, s.group_name ? `Grupo: ${s.group_name} · Postman: ${s.data_monitoring_enabled ? 'ON' : 'OFF'}` : `Postman: ${s.data_monitoring_enabled ? 'ON' : 'OFF'}`)
+                ),
                 userInfo && userInfo.is_admin && React.createElement('button', {
                     style: { backgroundColor: '#ef4444', fontSize: '0.7rem', padding: '2px 6px', marginLeft: 8, zIndex: 10 },
                     onClick: (e) => handleDeleteServer(s.server_id, e)
