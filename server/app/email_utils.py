@@ -1,6 +1,7 @@
 import requests
 import json
 import logging
+from twilio.rest import Client
 from .config import (
     EMAIL_API_KEY,
     EMAIL_API_SECRET,
@@ -12,8 +13,9 @@ from .config import (
     TWILIO_AUTH_TOKEN,
     TWILIO_VERIFY_SERVICE_SID,
     TWILIO_ALERT_PHONE,
-    WHATSAPP_API_TOKEN,
-    WHATSAPP_PHONE_NUMBER_ID,
+    TWILIO_WHATSAPP_FROM,
+    TWILIO_WHATSAPP_TO,
+    TWILIO_WHATSAPP_CONTENT_SID,
 )
 
 logger = logging.getLogger(__name__)
@@ -223,31 +225,56 @@ def send_offline_sms_alert(server_id: str, to_phone: str | None = None):
         logger.error(f"Excepción al enviar SMS offline ({server_id}): {e}")
 
 
-def send_whatsapp_text(to_phone: str, body: str):
+def send_whatsapp_twilio_alert(server_id: str, minutes_down: float, to_phone: str | None = None):
     """
-    Envía un mensaje de texto vía WhatsApp Cloud API.
+    Envía un mensaje de WhatsApp usando Twilio (Content API) cuando un servidor no responde.
+    Requiere:
+    - TWILIO_ACCOUNT_SID
+    - TWILIO_AUTH_TOKEN
+    - TWILIO_WHATSAPP_FROM  (ej: whatsapp:+14155238886)
+    - TWILIO_WHATSAPP_TO    (ej: whatsapp:+56966791438) si no se pasa to_phone
+    - TWILIO_WHATSAPP_CONTENT_SID
     """
-    if not (WHATSAPP_API_TOKEN and WHATSAPP_PHONE_NUMBER_ID):
-        logger.warning("WhatsApp API no configurada. No se enviará mensaje.")
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM and TWILIO_WHATSAPP_CONTENT_SID):
+        logger.warning("Twilio WhatsApp no configurado correctamente. No se enviará mensaje.")
         return
 
-    url = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_phone,
-        "type": "text",
-        "text": {"body": body},
-    }
+    to = to_phone or TWILIO_WHATSAPP_TO
+    if not to:
+        logger.warning("No se definió destinatario para WhatsApp Twilio.")
+        return
 
     try:
-        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=10)
-        if resp.status_code not in (200, 201):
-            logger.error(f"Error enviando WhatsApp ({to_phone}): {resp.status_code} - {resp.text}")
-        else:
-            logger.info(f"WhatsApp enviado a {to_phone}")
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        variables = {
+            "1": server_id,
+            "2": f"{minutes_down} minutos",
+        }
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            content_sid=TWILIO_WHATSAPP_CONTENT_SID,
+            content_variables=json.dumps(variables),
+            to=to,
+        )
+        logger.info(f"WhatsApp Twilio enviado a {to} para {server_id}. SID={message.sid}")
     except Exception as e:
-        logger.error(f"Excepción al enviar WhatsApp a {to_phone}: {e}")
+        logger.error(f"Excepción al enviar WhatsApp Twilio ({server_id}) a {to}: {e}")
+
+
+def send_whatsapp_text(to_phone: str, body: str):
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
+        logger.warning("Twilio WhatsApp no configurado. No se enviará mensaje.")
+        return
+    to = to_phone
+    if not to.startswith("whatsapp:"):
+        to = "whatsapp:" + to
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            body=body,
+            to=to,
+        )
+        logger.info(f"WhatsApp enviado a {to}. SID={message.sid}")
+    except Exception as e:
+        logger.error(f"Excepción al enviar WhatsApp a {to}: {e}")
