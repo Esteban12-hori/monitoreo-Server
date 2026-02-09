@@ -48,15 +48,6 @@ EMAIL_RECEIVERS = os.getenv("EMAIL_RECEIVERS", "jguajardo@wingsoft.com").split("
 # Tema de los correos (Subject Prefix)
 EMAIL_SUBJECT_PREFIX = os.getenv("EMAIL_SUBJECT_PREFIX", "[Monitoreo]")
 
-# Configuración Twilio para SMS urgentes
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_VERIFY_SERVICE_SID = os.getenv("TWILIO_VERIFY_SERVICE_SID", "")
-TWILIO_ALERT_PHONE = os.getenv("TWILIO_ALERT_PHONE", "")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
-TWILIO_WHATSAPP_TO = os.getenv("TWILIO_WHATSAPP_TO", "")
-TWILIO_WHATSAPP_CONTENT_SID = os.getenv("TWILIO_WHATSAPP_CONTENT_SID", "")
-
 # Configuración de monitoreo de servidores offline
 OFFLINE_CHECK_INTERVAL = int(os.getenv("OFFLINE_CHECK_INTERVAL", "60"))  # cada cuánto revisar (segundos)
 OFFLINE_MULTIPLIER = float(os.getenv("OFFLINE_MULTIPLIER", "3"))         # múltiplo del report_interval

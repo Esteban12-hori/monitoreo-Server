@@ -95,6 +95,7 @@ class DataMonitoringSchema(BaseModel):
     created_at_client: str = Field(..., alias="createdAt")
     entity_id: str = Field(..., alias="entityId")
     working_day: str = Field(..., alias="workingDay")
+    environment: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -163,6 +164,15 @@ class AlertRuleResponse(AlertRuleBase):
 
 class ServerUpdateGroupSchema(BaseModel):
     group_name: Optional[str]
+
+
+class ServerGroupSchema(BaseModel):
+    id: int
+    name: str
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 class ServerThresholdBase(BaseModel):

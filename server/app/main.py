@@ -32,7 +32,7 @@ from .config import (
     JWT_ALGORITHM,
     JWT_EXPIRE_MINUTES,
 )
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, WhatsAppSession
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, WhatsAppSession, ServerGroup
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -40,9 +40,10 @@ from .schemas import (
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
     ServerDataMonitoringUpdateSchema,
-    UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema
+    UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema,
+    ServerGroupSchema, ServerGroupCreateSchema
 )
-from .email_utils import send_alert_email, send_offline_sms_alert, send_whatsapp_twilio_alert, send_whatsapp_text
+from .email_utils import send_alert_email
 import time
 import asyncio
 import jwt
@@ -178,6 +179,20 @@ def ensure_link_column():
                 print(f"Error migrando user_server_link: {e}")
                 sess.rollback()
 
+def ensure_environment_column():
+    """Migración manual para agregar environment a DataMonitoring si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(DataMonitoring.environment).limit(1))
+        except Exception:
+            print("Agregando columna environment a data_monitoring...")
+            try:
+                sess.execute(text("ALTER TABLE data_monitoring ADD COLUMN environment VARCHAR(50)"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando environment: {e}")
+                sess.rollback()
+
 def ensure_admin_assignments():
     """Asegura que todos los administradores tengan asignados todos los servidores (para alertas)."""
     with Session(engine) as sess:
@@ -202,6 +217,7 @@ def startup():
     try:
         ensure_recipient_type_column()
         ensure_link_column()
+        ensure_environment_column()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
@@ -209,18 +225,6 @@ def startup():
         print(f"Advertencia en startup: {e}")
 
 
-@app.post("/api/whatsapp/webhook")
-async def whatsapp_webhook(request: Request):
-    form = await request.form()
-    from_raw = form.get("From", "")
-    body = form.get("Body", "")
-    phone = from_raw.replace("whatsapp:", "").strip()
-    text = (body or "").strip()
-    if not phone or not text:
-        return {"status": "ok"}
-    with Session(engine) as sess:
-        _handle_whatsapp_command(sess, phone, text)
-    return {"status": "ok"}
 
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
@@ -252,192 +256,6 @@ def verify_jwt_token(token: str) -> Optional[int]:
         return None
 
 
-def _get_or_create_whatsapp_session(sess: Session, phone: str) -> WhatsAppSession:
-    wa = (
-        sess.execute(select(WhatsAppSession).where(WhatsAppSession.phone == phone))
-        .scalars()
-        .first()
-    )
-    if not wa:
-        wa = WhatsAppSession(phone=phone)
-        sess.add(wa)
-        sess.flush()
-    return wa
-
-
-def _handle_whatsapp_command(sess: Session, phone: str, text: str):
-    normalized = text.strip().lower()
-    if normalized in ("help", "ayuda", "h"):
-        send_whatsapp_text(
-            phone,
-            (
-                "Bienvenido al monitor de servidores.\n\n"
-                "Comandos disponibles:\n"
-                "1) LOGIN correo password\n"
-                "2) LIST\n"
-                "3) STATUS n\n"
-                "4) STATUS ALL\n"
-            ),
-        )
-        return
-
-    parts = text.strip().split()
-    if len(parts) >= 3 and parts[0].lower() == "login":
-        email = parts[1]
-        password = " ".join(parts[2:])
-        user = (
-            sess.execute(select(User).where(User.email == email))
-            .scalars()
-            .first()
-        )
-        if not user or not verify_password(password, user.password_hash):
-            send_whatsapp_text(phone, "Credenciales inválidas. Intente nuevamente.")
-            return
-
-        wa = _get_or_create_whatsapp_session(sess, phone)
-        wa.user_id = user.id
-        wa.jwt_token = create_jwt_for_user(user.id)
-        sess.commit()
-
-        assigned_servers = (
-            sess.execute(
-                select(Server)
-                .join(UserServerLink, Server.id == UserServerLink.server_id)
-                .where(UserServerLink.user_id == user.id)
-            )
-            .scalars()
-            .all()
-        )
-        if not assigned_servers:
-            send_whatsapp_text(phone, "No tienes servidores asignados.")
-            return
-
-        lines = ["Servidores disponibles:"]
-        for idx, srv in enumerate(assigned_servers, start=1):
-            lines.append(f"{idx} - {srv.server_id}")
-        send_whatsapp_text(phone, "\n".join(lines))
-        return
-
-    if normalized == "list":
-        wa = _get_or_create_whatsapp_session(sess, phone)
-        if not wa.user_id:
-            send_whatsapp_text(phone, "Primero ejecuta: LOGIN correo password")
-            return
-        user = sess.get(User, wa.user_id)
-        assigned_servers = (
-            sess.execute(
-                select(Server)
-                .join(UserServerLink, Server.id == UserServerLink.server_id)
-                .where(UserServerLink.user_id == user.id)
-            )
-            .scalars()
-            .all()
-        )
-        if not assigned_servers:
-            send_whatsapp_text(phone, "No tienes servidores asignados.")
-            return
-        lines = ["Servidores disponibles:"]
-        for idx, srv in enumerate(assigned_servers, start=1):
-            lines.append(f"{idx} - {srv.server_id}")
-        send_whatsapp_text(phone, "\n".join(lines))
-        return
-
-    if normalized.startswith("status "):
-        wa = _get_or_create_whatsapp_session(sess, phone)
-        if not wa.user_id:
-            send_whatsapp_text(phone, "Primero ejecuta: LOGIN correo password")
-            return
-        arg = normalized.split(" ", 1)[1].strip()
-        user = sess.get(User, wa.user_id)
-        assigned_servers = (
-            sess.execute(
-                select(Server)
-                .join(UserServerLink, Server.id == UserServerLink.server_id)
-                .where(UserServerLink.user_id == user.id)
-            )
-            .scalars()
-            .all()
-        )
-        if not assigned_servers:
-            send_whatsapp_text(phone, "No tienes servidores asignados.")
-            return
-
-        if arg in ("all", "todos"):
-            lines = []
-            for srv in assigned_servers:
-                last_metric = (
-                    sess.execute(
-                        select(Metric)
-                        .where(Metric.server_id == srv.server_id)
-                        .order_by(Metric.ts.desc())
-                        .limit(1)
-                    )
-                    .scalars()
-                    .first()
-                )
-                if not last_metric:
-                    status_icon = "❌"
-                    cpu = "-"
-                    mem = "-"
-                    disk = "-"
-                else:
-                    status_icon = "✅"
-                    cpu = f"{last_metric.cpu_total:.1f}%"
-                    mem = f"{(last_metric.mem_used / max(last_metric.mem_total, 1) * 100):.1f}%"
-                    disk = f"{last_metric.disk_percent:.1f}%"
-                lines.append(
-                    f"{status_icon} {srv.server_id} | CPU {cpu} | MEM {mem} | DISK {disk}"
-                )
-            send_whatsapp_text(phone, "\n".join(lines) or "Sin datos.")
-            return
-
-        try:
-            idx = int(arg)
-        except ValueError:
-            send_whatsapp_text(phone, "Uso: STATUS n  o  STATUS ALL")
-            return
-
-        if idx < 1 or idx > len(assigned_servers):
-            send_whatsapp_text(phone, "Número de servidor inválido.")
-            return
-
-        srv = assigned_servers[idx - 1]
-        last_metric = (
-            sess.execute(
-                select(Metric)
-                .where(Metric.server_id == srv.server_id)
-                .order_by(Metric.ts.desc())
-                .limit(1)
-            )
-            .scalars()
-            .first()
-        )
-        if not last_metric:
-            send_whatsapp_text(phone, f"No hay datos recientes para {srv.server_id}.")
-            return
-
-        cpu = last_metric.cpu_total
-        mem_pct = (
-            last_metric.mem_used / max(last_metric.mem_total, 1) * 100
-            if last_metric.mem_total
-            else 0
-        )
-        disk_pct = last_metric.disk_percent or 0
-
-        status_lines = [
-            f"Servidor: {srv.server_id}",
-            "Estado: ONLINE",
-            f"CPU: {cpu:.1f}%",
-            f"Memoria: {mem_pct:.1f}%",
-            f"Disco: {disk_pct:.1f}%",
-        ]
-        send_whatsapp_text(phone, "\n".join(status_lines))
-        return
-
-    send_whatsapp_text(
-        phone,
-        "Comando no reconocido. Escribe AYUDA para ver los comandos disponibles.",
-    )
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -938,6 +756,58 @@ def delete_alert_rule(rule_id: int, user: dict = Depends(require_admin)):
         sess.commit()
         return {"status": "deleted"}
 
+# --- Server Groups ---
+
+@app.get("/api/admin/groups", response_model=List[ServerGroupSchema])
+def list_server_groups(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        groups = sess.execute(select(ServerGroup)).scalars().all()
+        return groups
+
+@app.post("/api/admin/groups", response_model=ServerGroupSchema)
+def create_server_group(payload: ServerGroupCreateSchema, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        existing = sess.execute(select(ServerGroup).where(ServerGroup.name == payload.name)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="El grupo ya existe")
+        
+        new_group = ServerGroup(name=payload.name)
+        sess.add(new_group)
+        sess.commit()
+        sess.refresh(new_group)
+        return new_group
+
+@app.delete("/api/admin/groups/{group_id}")
+def delete_server_group(group_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        g = sess.get(ServerGroup, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Grupo no encontrado")
+        
+        # Check if used by any server
+        srv = sess.execute(select(Server).where(Server.group_name == g.name)).first()
+        if srv:
+            raise HTTPException(status_code=400, detail="No se puede eliminar un grupo que tiene servidores asignados")
+            
+        sess.delete(g)
+        sess.commit()
+        return {"status": "deleted"}
+
+@app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
+def list_data_monitoring(
+    limit: int = 50, 
+    offset: int = 0, 
+    user: dict = Depends(require_data_monitoring_access)
+):
+    with Session(engine) as sess:
+        data = sess.execute(
+            select(DataMonitoring)
+            .order_by(DataMonitoring.received_at.desc())
+            .offset(offset)
+            .limit(limit)
+        ).scalars().all()
+        return data
+
 @app.put("/api/admin/servers/{server_id}/group")
 def update_server_group(server_id: str, payload: ServerUpdateGroupSchema, user: dict = Depends(require_admin)):
     with Session(engine) as sess:
@@ -1286,7 +1156,8 @@ def create_data_monitoring(payload: DataMonitoringSchema):
                         product=payload.product,
                         created_at_client=payload.created_at_client,
                         entity_id=payload.entity_id,
-                        working_day=payload.working_day
+                        working_day=payload.working_day,
+                        environment=payload.environment
                     )
             sess.add(data)
             sess.commit()
@@ -1298,14 +1169,23 @@ def create_data_monitoring(payload: DataMonitoringSchema):
 
 @app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
 def list_data_monitoring(
-    limit: int = 50, user: dict = Depends(require_data_monitoring_access)
+    limit: int = 50,
+    environment: Optional[str] = None,
+    app_name: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    user: dict = Depends(require_data_monitoring_access)
 ):
     with Session(engine) as sess:
-        data = sess.execute(
-            select(DataMonitoring)
-            .order_by(DataMonitoring.id.desc())
-            .limit(limit)
-        ).scalars().all()
+        query = select(DataMonitoring).order_by(DataMonitoring.id.desc())
+
+        if environment:
+            query = query.where(DataMonitoring.environment == environment)
+        if app_name:
+            query = query.where(DataMonitoring.app == app_name)
+        if entity_id:
+            query = query.where(DataMonitoring.entity_id == entity_id)
+
+        data = sess.execute(query.limit(limit)).scalars().all()
         
         result = []
         for d in data:
@@ -1320,6 +1200,7 @@ def list_data_monitoring(
                 createdAt=d.created_at_client,
                 entityId=d.entity_id,
                 workingDay=d.working_day,
+                environment=d.environment,
                 id=d.id,
                 received_at=d.received_at
             ))
@@ -1334,14 +1215,14 @@ def export_data_monitoring(user: dict = Depends(require_data_monitoring_access))
         
         output = io.StringIO()
         writer = csv.writer(output)
-        headers = ["id", "app", "cash_register_number", "user_name", "flow", "patent", "vehicle_type", "product", "created_at_client", "entity_id", "working_day", "received_at"]
+        headers = ["id", "app", "cash_register_number", "user_name", "flow", "patent", "vehicle_type", "product", "created_at_client", "entity_id", "working_day", "environment", "received_at"]
         writer.writerow(headers)
         
         for row in results:
             writer.writerow([
                 row.id, row.app, row.cash_register_number, row.user_name, 
                 row.flow, row.patent, row.vehicle_type, row.product, 
-                row.created_at_client, row.entity_id, row.working_day, row.received_at
+                row.created_at_client, row.entity_id, row.working_day, row.environment, row.received_at
             ])
             
         output.seek(0)

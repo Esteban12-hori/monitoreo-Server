@@ -133,6 +133,14 @@ class WhatsAppSession(Base):
 
     user = relationship("User")
 
+
+class ServerGroup(Base):
+    __tablename__ = "server_groups"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class ServerThreshold(Base):
     __tablename__ = "server_thresholds"
     id = Column(Integer, primary_key=True)
@@ -173,4 +181,5 @@ class DataMonitoring(Base):
     created_at_client = Column(String(100), nullable=False)
     entity_id = Column(String(100), nullable=False)
     working_day = Column(String(100), nullable=False)
+    environment = Column(String(50), nullable=True)
     received_at = Column(DateTime(timezone=True), server_default=func.now())
