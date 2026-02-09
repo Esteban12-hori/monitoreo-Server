@@ -166,6 +166,10 @@ class ServerUpdateGroupSchema(BaseModel):
     group_name: Optional[str]
 
 
+class ServerGroupCreateSchema(BaseModel):
+    name: str = Field(..., min_length=1)
+
+
 class ServerGroupSchema(BaseModel):
     id: int
     name: str

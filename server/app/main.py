@@ -793,20 +793,7 @@ def delete_server_group(group_id: int, user: dict = Depends(require_admin)):
         sess.commit()
         return {"status": "deleted"}
 
-@app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
-def list_data_monitoring(
-    limit: int = 50, 
-    offset: int = 0, 
-    user: dict = Depends(require_data_monitoring_access)
-):
-    with Session(engine) as sess:
-        data = sess.execute(
-            select(DataMonitoring)
-            .order_by(DataMonitoring.received_at.desc())
-            .offset(offset)
-            .limit(limit)
-        ).scalars().all()
-        return data
+
 
 @app.put("/api/admin/servers/{server_id}/group")
 def update_server_group(server_id: str, payload: ServerUpdateGroupSchema, user: dict = Depends(require_admin)):
@@ -1170,6 +1157,7 @@ def create_data_monitoring(payload: DataMonitoringSchema):
 @app.get("/api/data-monitoring", response_model=List[DataMonitoringResponseSchema])
 def list_data_monitoring(
     limit: int = 50,
+    offset: int = 0,
     environment: Optional[str] = None,
     app_name: Optional[str] = None,
     entity_id: Optional[str] = None,
@@ -1185,7 +1173,7 @@ def list_data_monitoring(
         if entity_id:
             query = query.where(DataMonitoring.entity_id == entity_id)
 
-        data = sess.execute(query.limit(limit)).scalars().all()
+        data = sess.execute(query.offset(offset).limit(limit)).scalars().all()
         
         result = []
         for d in data:
