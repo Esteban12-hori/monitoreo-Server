@@ -123,15 +123,6 @@ class UserSession(Base):
     user = relationship("User")
 
 
-class WhatsAppSession(Base):
-    __tablename__ = "whatsapp_sessions"
-    id = Column(Integer, primary_key=True)
-    phone = Column(String(50), unique=True, index=True, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    jwt_token = Column(String(512), nullable=True)
-    last_message_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    user = relationship("User")
 
 
 class ServerGroup(Base):

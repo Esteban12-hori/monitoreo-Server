@@ -53,10 +53,6 @@ OFFLINE_CHECK_INTERVAL = int(os.getenv("OFFLINE_CHECK_INTERVAL", "60"))  # cada 
 OFFLINE_MULTIPLIER = float(os.getenv("OFFLINE_MULTIPLIER", "3"))         # múltiplo del report_interval
 OFFLINE_MIN_SECONDS = int(os.getenv("OFFLINE_MIN_SECONDS", "300"))       # mínimo en segundos antes de considerar offline
 
-# Configuración de WhatsApp Business (Cloud API)
-WHATSAPP_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN", "")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 
 # Configuración JWT para autenticación de integraciones (p.ej., WhatsApp)
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me")

@@ -32,7 +32,7 @@ from .config import (
     JWT_ALGORITHM,
     JWT_EXPIRE_MINUTES,
 )
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, WhatsAppSession, ServerGroup
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -218,6 +218,7 @@ def startup():
         ensure_recipient_type_column()
         ensure_link_column()
         ensure_environment_column()
+        ensure_server_group_column()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
