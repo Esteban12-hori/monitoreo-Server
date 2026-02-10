@@ -174,6 +174,234 @@ function ThresholdModal({ serverId, onClose }) {
   );
 }
 
+function ContainerMonitor({ containers }) {
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  
+  const filtered = (containers || []).filter(c => {
+      const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.image.toLowerCase().includes(search.toLowerCase());
+      const matchStatus = statusFilter === 'all' || c.status.toLowerCase().includes(statusFilter);
+      return matchSearch && matchStatus;
+  });
+  
+  return React.createElement('div', { className: 'card' },
+    React.createElement('div', { className: 'card-title' }, '🐳 Monitor de Contenedores'),
+    React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 15 } },
+        React.createElement('input', { 
+            placeholder: 'Buscar container...', 
+            value: search, 
+            onChange: e => setSearch(e.target.value), 
+            style: { flex: 1, padding: 8, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' } 
+        }),
+        React.createElement('select', { 
+            value: statusFilter, 
+            onChange: e => setStatusFilter(e.target.value),
+            style: { padding: 8, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' }
+        },
+            React.createElement('option', { value: 'all' }, 'Todos'),
+            React.createElement('option', { value: 'up' }, 'Activos'),
+            React.createElement('option', { value: 'exited' }, 'Detenidos')
+        )
+    ),
+    React.createElement('div', { style: { overflowX: 'auto' } },
+        React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+            React.createElement('thead', null,
+                React.createElement('tr', { style: { borderBottom: '1px solid var(--border)', textAlign: 'left' } },
+                    React.createElement('th', { style: { padding: 10 } }, 'Nombre'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Imagen'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Estado'),
+                    React.createElement('th', { style: { padding: 10 } }, 'CPU %'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Mem %')
+                )
+            ),
+            React.createElement('tbody', null,
+                filtered.length === 0 
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 5, style: { padding: 20, textAlign: 'center' } }, 'No hay contenedores'))
+                : filtered.map(c => 
+                    React.createElement('tr', { key: c.id || c.name, style: { borderBottom: '1px solid var(--border)' } },
+                        React.createElement('td', { style: { padding: 10, fontWeight: 500 } }, c.name),
+                        React.createElement('td', { style: { padding: 10, fontSize: '0.85rem', color: 'var(--text-muted)' } }, c.image || '-'),
+                        React.createElement('td', { style: { padding: 10 } }, 
+                             React.createElement('span', { className: 'badge', style: { 
+                                 background: c.status.toLowerCase().includes('up') ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                 color: c.status.toLowerCase().includes('up') ? '#10b981' : '#ef4444'
+                             } }, c.status)
+                        ),
+                        React.createElement('td', { style: { padding: 10 } }, c.cpu || 0),
+                        React.createElement('td', { style: { padding: 10 } }, c.mem || 0)
+                    )
+                )
+            )
+        )
+    )
+  );
+}
+
+function ServiceManager({ services, serverId }) {
+    const [search, setSearch] = useState('');
+    const [processing, setProcessing] = useState(null); // service_name being processed
+    const [selectedServices, setSelectedServices] = useState({});
+
+    const filtered = (services || []).filter(s => s.name.toLowerCase().includes(search.toLowerCase()) || (s.display_name && s.display_name.toLowerCase().includes(search.toLowerCase())));
+
+    const handleAction = async (serviceName, action) => {
+        if (!confirm(`¿Estás seguro de que quieres ${action} el servicio ${serviceName}?`)) return;
+        setProcessing(serviceName);
+        try {
+            await fetchJSON(`/api/servers/${serverId}/services/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ service: serviceName, action })
+            });
+            alert(`Comando ${action} enviado correctamente. El agente lo ejecutará en breve.`);
+        } catch (e) {
+            alert(`Error: ${e.message}`);
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const handleGroupAction = async (action) => {
+        const targets = Object.keys(selectedServices).filter(k => selectedServices[k]);
+        if (targets.length === 0) return alert("Selecciona al menos un servicio");
+        if (!confirm(`¿${action} ${targets.length} servicios seleccionados?`)) return;
+        
+        setProcessing('GROUP');
+        try {
+            await fetchJSON(`/api/servers/${serverId}/services/bulk-action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ services: targets, action })
+            });
+            alert("Acciones enviadas correctamente. El agente las ejecutará en breve.");
+            setSelectedServices({});
+        } catch (e) {
+            alert(`Error al enviar acciones masivas: ${e.message}`);
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const toggleSelect = (name) => setSelectedServices(p => ({...p, [name]: !p[name]}));
+    const toggleAll = () => {
+        if (Object.keys(selectedServices).length === filtered.length) setSelectedServices({});
+        else {
+            const all = {};
+            filtered.forEach(s => all[s.name] = true);
+            setSelectedServices(all);
+        }
+    };
+
+    return React.createElement('div', { className: 'card' },
+        React.createElement('div', { className: 'card-title' }, '⚙️ Gestión de Servicios'),
+        React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 15, flexWrap: 'wrap' } },
+             React.createElement('input', { 
+                placeholder: 'Buscar servicio...', 
+                value: search, 
+                onChange: e => setSearch(e.target.value), 
+                style: { padding: 8, flex: 1, minWidth: 200, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' } 
+            }),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('start'), disabled: processing }, 'Iniciar'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('stop'), disabled: processing }, 'Detener'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('restart'), disabled: processing }, 'Reiniciar'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('update'), disabled: processing }, 'Actualizar')
+        ),
+        React.createElement('div', { style: { overflowX: 'auto', maxHeight: 400, overflowY: 'auto' } },
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+                React.createElement('thead', null,
+                    React.createElement('tr', { style: { borderBottom: '1px solid var(--border)', textAlign: 'left' } },
+                        React.createElement('th', { style: { padding: 10, width: 30 } }, 
+                            React.createElement('input', { type: 'checkbox', checked: filtered.length > 0 && Object.keys(selectedServices).length === filtered.length, onChange: toggleAll })
+                        ),
+                        React.createElement('th', { style: { padding: 10 } }, 'Nombre'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Display Name'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Versión'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Dependencias'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Estado'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Acciones')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    filtered.length === 0 
+                    ? React.createElement('tr', null, React.createElement('td', { colSpan: 6, style: { padding: 20, textAlign: 'center' } }, 'No hay servicios'))
+                    : filtered.map(s => 
+                        React.createElement('tr', { key: s.name, style: { borderBottom: '1px solid var(--border)', background: selectedServices[s.name] ? 'rgba(var(--primary-rgb), 0.1)' : 'transparent' } },
+                            React.createElement('td', { style: { padding: 10 } }, 
+                                React.createElement('input', { type: 'checkbox', checked: !!selectedServices[s.name], onChange: () => toggleSelect(s.name) })
+                            ),
+                            React.createElement('td', { style: { padding: 10 } }, s.name),
+                            React.createElement('td', { style: { padding: 10 } }, s.display_name),
+                            React.createElement('td', { style: { padding: 10, fontSize: '0.8rem', color: 'var(--text-muted)' } }, s.version || '-'),
+                            React.createElement('td', { style: { padding: 10, fontSize: '0.8rem', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, 
+                                (s.dependencies || []).join(', ') || '-'
+                            ),
+                            React.createElement('td', { style: { padding: 10 } }, 
+                                React.createElement('span', { className: 'badge', style: { background: s.status === 'running' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)', color: s.status === 'running' ? '#10b981' : '#ef4444' } }, s.status)
+                            ),
+                            React.createElement('td', { style: { padding: 10, display: 'flex', gap: 5 } },
+                                processing === s.name 
+                                ? React.createElement('span', { style: { fontSize: '0.8rem' } }, 'Procesando...')
+                                : React.createElement(React.Fragment, null,
+                                    s.status !== 'running' && React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'start') }, 'Iniciar'),
+                                    s.status === 'running' && React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'stop') }, 'Detener'),
+                                    React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'restart') }, 'Reiniciar'),
+                                    React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'update') }, 'Actualizar')
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    );
+}
+
+function SidebarSettingsModal({ config, setConfig, onClose }) {
+    const update = (newSections) => {
+        const newConfig = { ...config, sections: newSections };
+        setConfig(newConfig);
+    };
+
+    const toggle = (index) => {
+        const newSections = [...config.sections];
+        newSections[index].visible = !newSections[index].visible;
+        update(newSections);
+    };
+
+    const move = (index, direction) => {
+        const newSections = [...config.sections];
+        if (direction === -1 && index > 0) {
+            [newSections[index], newSections[index - 1]] = [newSections[index - 1], newSections[index]];
+        } else if (direction === 1 && index < newSections.length - 1) {
+            [newSections[index], newSections[index + 1]] = [newSections[index + 1], newSections[index]];
+        }
+        update(newSections);
+    };
+
+    return React.createElement('div', { className: 'modal-overlay' },
+        React.createElement('div', { className: 'card', style: { width: 400 } },
+            React.createElement('div', { className: 'card-title', style: { marginBottom: 20 } }, '🛠️ Configuración de Panel'),
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+                config.sections.map((s, i) => 
+                    React.createElement('div', { key: s.id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, border: '1px solid var(--border)', borderRadius: 4 } },
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                            React.createElement('input', { type: 'checkbox', checked: s.visible, onChange: () => toggle(i) }),
+                            React.createElement('span', null, s.label)
+                        ),
+                        React.createElement('div', { style: { display: 'flex', gap: 5 } },
+                            React.createElement('button', { className: 'secondary', disabled: i === 0, onClick: () => move(i, -1), style: { padding: '2px 6px' } }, '⬆'),
+                            React.createElement('button', { className: 'secondary', disabled: i === config.sections.length - 1, onClick: () => move(i, 1), style: { padding: '2px 6px' } }, '⬇')
+                        )
+                    )
+                )
+            ),
+            React.createElement('div', { style: { marginTop: 25, textAlign: 'right' } },
+                 React.createElement('button', { onClick: onClose }, 'Cerrar')
+            )
+        )
+    );
+}
+
 // --- ADMIN COMPONENTS ---
 
 function ServerAssignmentModal({ user, onClose }) {
@@ -190,11 +418,12 @@ function ServerAssignmentModal({ user, onClose }) {
                 ]);
                 setAllServers(serversData);
                 const map = {};
-                serversData.forEach(s => { map[s.server_id] = { assigned: false, alerts: true }; });
+                serversData.forEach(s => { map[s.server_id] = { assigned: false, alerts: true, postman: 'none' }; });
                 assignedData.forEach(a => {
                     if (map[a.server_id]) {
                         map[a.server_id].assigned = true;
                         map[a.server_id].alerts = a.receive_alerts;
+                        map[a.server_id].postman = a.postman_access_level || 'none';
                     }
                 });
                 setAssignments(map);
@@ -206,10 +435,15 @@ function ServerAssignmentModal({ user, onClose }) {
 
     const toggleAssigned = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], assigned: !p[sid].assigned}}));
     const toggleAlerts = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], alerts: !p[sid].alerts}}));
+    const setPostman = (sid, val) => setAssignments(p => ({...p, [sid]: {...p[sid], postman: val}}));
     
     const handleSave = async () => {
         try {
-            const payload = Object.entries(assignments).filter(([_, v]) => v.assigned).map(([sid, v]) => ({ server_id: sid, receive_alerts: v.alerts }));
+            const payload = Object.entries(assignments).filter(([_, v]) => v.assigned).map(([sid, v]) => ({ 
+                server_id: sid, 
+                receive_alerts: v.alerts,
+                postman_access_level: v.postman 
+            }));
             await fetchJSON(`/api/admin/users/${user.id}/servers`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ assignments: payload }) });
             onClose();
         } catch (e) { alert(e.message); }
@@ -224,8 +458,20 @@ function ServerAssignmentModal({ user, onClose }) {
                     return React.createElement('div', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--border)', borderRadius: 6, background: st.assigned ? 'var(--bg-element)' : 'transparent' } },
                         React.createElement('input', { type: 'checkbox', checked: st.assigned, onChange: () => toggleAssigned(s.server_id), style: { width: 'auto' } }),
                         React.createElement('span', { style: { flex: 1, fontWeight: 500 } }, s.server_id),
-                        st.assigned && React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' } },
-                            React.createElement('input', { type: 'checkbox', checked: st.alerts, onChange: () => toggleAlerts(s.server_id), style: { width: 'auto' } }), 'Alertas'
+                        st.assigned && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' } },
+                                React.createElement('input', { type: 'checkbox', checked: st.alerts, onChange: () => toggleAlerts(s.server_id), style: { width: 'auto' } }), 'Alertas'
+                            ),
+                            React.createElement('select', { 
+                                value: st.postman, 
+                                onChange: e => setPostman(s.server_id, e.target.value),
+                                style: { fontSize: '0.8rem', padding: '2px 4px' } 
+                            },
+                                React.createElement('option', { value: 'none' }, 'Sin Acceso Postman'),
+                                React.createElement('option', { value: 'view' }, 'Ver'),
+                                React.createElement('option', { value: 'edit' }, 'Editar'),
+                                React.createElement('option', { value: 'admin' }, 'Admin')
+                            )
                         )
                     );
                 })
@@ -315,7 +561,7 @@ function ServerGroupManager() {
 
 function AlertRulesManager() {
   const [rules, setRules] = useState([]);
-  const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '' });
+  const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '', extra_emails: '' });
   const [loading, setLoading] = useState(false);
 
   const load = () => fetchJSON('/api/admin/alert-rules').then(setRules).catch(console.error);
@@ -336,7 +582,8 @@ function AlertRulesManager() {
         alert_type: newRule.alert_type,
         server_scope: newRule.server_scope,
         target_id: newRule.server_scope === 'global' ? null : newRule.target_id,
-        emails: [newRule.email]
+        emails: [newRule.email],
+        extra_emails: newRule.extra_emails ? JSON.stringify(newRule.extra_emails.split(',').map(e => e.trim()).filter(e => e)) : null
       };
 
       await fetchJSON('/api/admin/alert-rules', { 
@@ -344,7 +591,7 @@ function AlertRulesManager() {
         headers: {'Content-Type':'application/json'}, 
         body: JSON.stringify(payload) 
       });
-      setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '' });
+      setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '', extra_emails: '' });
       load();
     } catch (e) { alert(e.message); }
     finally { setLoading(false); }
@@ -362,7 +609,7 @@ function AlertRulesManager() {
     React.createElement('div', { className: 'card-title' }, 'Reglas de Ruteo de Alertas'),
     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 20 } },
       React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}) },
-        ['cpu', 'memory', 'disk', 'offline'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
+        ['cpu', 'memory', 'disk', 'offline', 'service_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
       ),
       React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}) },
         React.createElement('option', { value: 'global' }, 'Global'),
@@ -375,6 +622,7 @@ function AlertRulesManager() {
         onChange: e => setNewRule({...newRule, target_id: e.target.value}) 
       }),
       React.createElement('input', { placeholder: 'Email destino', value: newRule.email, onChange: e => setNewRule({...newRule, email: e.target.value}) }),
+      React.createElement('input', { placeholder: 'CC (separar por comas)', value: newRule.extra_emails, onChange: e => setNewRule({...newRule, extra_emails: e.target.value}) }),
       React.createElement('button', { onClick: createRule, disabled: loading }, loading ? '...' : 'Añadir')
     ),
     React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
@@ -383,7 +631,7 @@ function AlertRulesManager() {
           React.createElement('div', null, 
             React.createElement('div', { style: { fontWeight: 'bold' } }, r.alert_type.toUpperCase()),
             React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)' } }, 
-              `${r.server_scope.toUpperCase()} ${r.target_id ? `(${r.target_id})` : ''} -> ${r.emails && r.emails.join(', ')}`
+              `${r.server_scope.toUpperCase()} ${r.target_id ? `(${r.target_id})` : ''} -> ${r.emails && r.emails.join(', ')}${r.extra_emails ? ' + CC: ' + JSON.parse(r.extra_emails).join(', ') : ''}`
             )
           ),
           React.createElement('button', { className: 'secondary', style: { padding: '2px 8px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }, onClick: () => deleteRule(r.id) }, 'Eliminar')
@@ -488,11 +736,17 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
 
   if (!userInfo || (!userInfo.is_admin && !userInfo.can_view_data_monitoring)) return null;
   if (!currentServer || !currentServer.data_monitoring_enabled) return null;
+  
+  const accessLevel = currentServer.postman_access_level || 'none';
+  if (accessLevel === 'none' && !userInfo.is_admin) return React.createElement('div', { className: 'card' }, '⛔ Acceso denegado al panel Postman');
+
+  const canEdit = accessLevel === 'edit' || accessLevel === 'admin' || userInfo.is_admin;
 
   return React.createElement('div', { className: 'card' },
     React.createElement('div', { className: 'card-header' },
       React.createElement('div', { className: 'card-title' }, '📊 Dashboard Postman'),
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        canEdit && React.createElement('button', { className: 'secondary', onClick: () => alert('Funcionalidad de edición en desarrollo') }, '✏️ Editar'),
         React.createElement('button', { className: 'secondary', onClick: fetchData }, 'Refrescar')
       )
     ),
@@ -542,6 +796,62 @@ function App() {
   const [userInfo, setUserInfo] = useState(getUserInfo());
   const [currentView, setCurrentView] = useState('dashboard');
   
+  // Sidebar Config
+  const [sidebarConfig, setSidebarConfig] = useState(() => {
+      // 1. Try from userInfo (backend persistence)
+      const u = getUserInfo();
+      if (u && u.sidebar_config) return u.sidebar_config;
+
+      // 2. Try from localStorage (legacy/fallback)
+      try {
+          const s = localStorage.getItem('sidebar_config');
+          if (s) {
+              const parsed = JSON.parse(s);
+              // Migrate old config if needed
+              if (!parsed.sections) {
+                  return {
+                      sections: [
+                          { id: 'containers', label: '🐳 Monitor Contenedores', visible: parsed.showContainers !== false },
+                          { id: 'services', label: '⚙️ Gestión Servicios', visible: parsed.showServices !== false },
+                          { id: 'postman', label: '📊 Postman Dashboard', visible: parsed.showPostman !== false }
+                      ]
+                  };
+              }
+              return parsed;
+          }
+      } catch {}
+      
+      // 3. Default
+      return {
+          sections: [
+              { id: 'containers', label: '🐳 Monitor Contenedores', visible: true },
+              { id: 'services', label: '⚙️ Gestión Servicios', visible: true },
+              { id: 'postman', label: '📊 Postman Dashboard', visible: true }
+          ]
+      };
+  });
+  
+  // Auto-save Sidebar Config
+  useEffect(() => {
+      if (!authed) return;
+      
+      // Save to local storage for offline/fast load
+      localStorage.setItem('sidebar_config', JSON.stringify(sidebarConfig));
+      
+      // Debounce save to backend
+      const timer = setTimeout(() => {
+          fetchJSON('/api/user/sidebar-config', {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ config: sidebarConfig })
+          }).catch(err => console.error("Error saving sidebar config:", err));
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+  }, [sidebarConfig, authed]);
+
+  const [showSidebarSettings, setShowSidebarSettings] = useState(false);
+
   // Login State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -598,6 +908,7 @@ function App() {
         localStorage.setItem('dashboard_token', res.token);
         localStorage.setItem('user_info', JSON.stringify(res));
         setUserInfo(res);
+        if (res.sidebar_config) setSidebarConfig(res.sidebar_config);
         setAuthed(true);
       }
     } catch (e) { setLoginError(e.message); }
@@ -633,12 +944,40 @@ function App() {
         userInfo?.is_admin && React.createElement('div', { className: `nav-item ${currentView === 'admin' ? 'active' : ''}`, onClick: () => setCurrentView('admin') }, '⚙️ Administración')
     ),
     React.createElement('div', { className: 'sidebar-footer' },
+        React.createElement('button', { className: 'secondary', style: { width: '100%', marginBottom: 10, fontSize: '0.85rem' }, onClick: () => setShowSidebarSettings(true) }, '🛠️ Configuración Panel'),
         React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 10, color: 'var(--text-muted)' } }, userInfo?.name),
         React.createElement('button', { className: 'secondary', style: { width: '100%' }, onClick: handleLogout }, 'Salir')
     )
   );
 
   const DashboardView = () => {
+    if (!selected) {
+        return React.createElement('div', { className: 'fade-in' },
+            React.createElement('h2', { style: { marginBottom: 20 } }, 'Mis Servidores'),
+            servers.length === 0 
+                ? React.createElement('div', { className: 'card' }, 'No tienes servidores asignados.')
+                : React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 20 } },
+                    servers.map(s => 
+                        React.createElement('div', { 
+                            key: s.server_id, 
+                            className: 'card',
+                            style: { cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border)' },
+                            onMouseEnter: (e) => e.currentTarget.style.borderColor = 'var(--primary)',
+                            onMouseLeave: (e) => e.currentTarget.style.borderColor = 'var(--border)',
+                            onClick: () => setSelected(s.server_id)
+                        },
+                            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+                                React.createElement('div', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, s.server_id),
+                                React.createElement('span', { style: { fontSize: '1.5rem' } }, '🖥️')
+                            ),
+                            React.createElement('div', { style: { color: 'var(--text-muted)', fontSize: '0.9rem' } }, s.group_name ? `Grupo: ${s.group_name}` : 'Sin Grupo'),
+                            React.createElement('div', { style: { marginTop: 15, fontSize: '0.85rem', color: 'var(--primary)' } }, 'Ver Métricas →')
+                        )
+                    )
+                )
+        );
+    }
+
     const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0} };
     const cpuData = history.map(h => h.cpu.total);
     const memData = history.map(h => Math.round((h.memory.used / h.memory.total) * 100));
@@ -647,14 +986,14 @@ function App() {
         !status.ok && React.createElement('div', { style: { padding: 15, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 8, marginBottom: 20 } }, status.message),
         
         React.createElement('div', { className: 'card', style: { display: 'flex', gap: 15, alignItems: 'center', flexWrap: 'wrap' } },
-            React.createElement('span', { style: { color: 'var(--text-muted)' } }, 'Servidor:'),
-            React.createElement('select', { value: selected, onChange: e => setSelected(e.target.value), style: { width: 'auto', minWidth: 200 } },
-                servers.length === 0 ? React.createElement('option', null, 'Sin servidores') :
-                servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, `${s.server_id} ${s.group_name ? `(${s.group_name})` : ''}`))
+            React.createElement('button', { className: 'secondary', onClick: () => setSelected('') }, '⬅ Volver'),
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+                React.createElement('span', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, selected),
+                React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.find(s=>s.server_id===selected)?.group_name || '')
             ),
-            selected && React.createElement('span', { className: 'badge', style: { background: 'var(--bg-element)', padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem' } }, 'Conectado'),
+            React.createElement('span', { className: 'badge', style: { background: 'var(--bg-element)', padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem', marginLeft: 10 } }, 'Conectado'),
             React.createElement('div', { style: { marginLeft: 'auto' } },
-                selected && React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
+                React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
             )
         ),
 
@@ -675,7 +1014,12 @@ function App() {
             )
         ),
 
-        React.createElement(DataMonitoringDashboard, { currentServer: servers.find(s => s.server_id === selected), userInfo }),
+        (sidebarConfig.sections || []).filter(s => s.visible).map(s => {
+            if (s.id === 'containers') return React.createElement(ContainerMonitor, { key: s.id, containers: latest.docker?.containers });
+            if (s.id === 'services') return React.createElement(ServiceManager, { key: s.id, services: latest.services, serverId: selected });
+            if (s.id === 'postman') return React.createElement(DataMonitoringDashboard, { key: s.id, currentServer: servers.find(s => s.server_id === selected), userInfo });
+            return null;
+        }),
 
         editingThresholds && React.createElement(ThresholdModal, { serverId: editingThresholds, onClose: () => setEditingThresholds(null) })
     );
@@ -685,7 +1029,8 @@ function App() {
     React.createElement(Sidebar),
     React.createElement('main', { className: 'main-content' },
         currentView === 'dashboard' ? React.createElement(DashboardView) : React.createElement(AdminPanel)
-    )
+    ),
+    showSidebarSettings && React.createElement(SidebarSettingsModal, { config: sidebarConfig, setConfig: setSidebarConfig, onClose: () => setShowSidebarSettings(false) })
   );
 }
 

@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import create_engine, select, delete, text
+from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -32,7 +33,7 @@ from .config import (
     JWT_ALGORITHM,
     JWT_EXPIRE_MINUTES,
 )
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -41,7 +42,8 @@ from .schemas import (
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
     ServerDataMonitoringUpdateSchema,
     UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema,
-    ServerGroupSchema, ServerGroupCreateSchema
+    ServerGroupSchema, ServerGroupCreateSchema, ServiceSchema, AgentCommandResponse, ServiceActionSchema,
+    BulkServiceActionSchema, SidebarConfigUpdateSchema
 )
 from .email_utils import send_alert_email
 import time
@@ -193,6 +195,20 @@ def ensure_environment_column():
                 print(f"Error migrando environment: {e}")
                 sess.rollback()
 
+def ensure_server_group_column():
+    """Migración manual para agregar group_name a servers si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(Server.group_name).limit(1))
+        except Exception:
+            print("Agregando columna group_name a servers...")
+            try:
+                sess.execute(text("ALTER TABLE servers ADD COLUMN group_name VARCHAR(50)"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando group_name: {e}")
+                sess.rollback()
+
 def ensure_admin_assignments():
     """Asegura que todos los administradores tengan asignados todos los servidores (para alertas)."""
     with Session(engine) as sess:
@@ -205,18 +221,48 @@ def ensure_admin_assignments():
                 for srv in servers:
                     if srv.id not in existing_links:
                         print(f"Auto-asignando {srv.server_id} al admin {admin.email}")
-                        link = UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True)
+                        link = UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True, postman_access_level='admin')
                         sess.add(link)
             sess.commit()
         except Exception as e:
             print(f"Error en ensure_admin_assignments: {e}")
             sess.rollback()
 
+def ensure_postman_access_column():
+    """Migración manual para agregar postman_access_level a user_server_link si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(UserServerLink.postman_access_level).limit(1))
+        except Exception:
+            print("Agregando columna postman_access_level a user_server_link...")
+            try:
+                sess.execute(text("ALTER TABLE user_server_link ADD COLUMN postman_access_level VARCHAR(20) DEFAULT 'none'"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando user_server_link: {e}")
+                sess.rollback()
+
+def ensure_sidebar_config_column():
+    """Migración manual para agregar sidebar_config a users si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(User.sidebar_config).limit(1))
+        except Exception:
+            print("Agregando columna sidebar_config a users...")
+            try:
+                sess.execute(text("ALTER TABLE users ADD COLUMN sidebar_config TEXT DEFAULT NULL"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando users: {e}")
+                sess.rollback()
+
 @app.on_event("startup")
 def startup():
     try:
         ensure_recipient_type_column()
         ensure_link_column()
+        ensure_postman_access_column()
+        ensure_sidebar_config_column()
         ensure_environment_column()
         ensure_server_group_column()
         ensure_admin_assignments()
@@ -350,12 +396,20 @@ def login(request: Request, payload: LoginSchema):
         can_view_dm = cfg.enabled if cfg else False
         sess.commit()
         
+        sidebar_conf = None
+        if user.sidebar_config:
+            try:
+                sidebar_conf = json.loads(user.sidebar_config)
+            except:
+                pass
+
         return {
             "token": token, 
             "email": user.email, 
             "name": user.name, 
             "is_admin": user.is_admin,
-            "can_view_data_monitoring": can_view_dm
+            "can_view_data_monitoring": can_view_dm,
+            "sidebar_config": sidebar_conf
         }
 
 @app.post("/api/logout")
@@ -368,6 +422,38 @@ def logout(x_dashboard_token: Optional[str] = Header(None)):
         sess.commit()
     
     return {"status": "logged_out"}
+
+@app.get("/api/user/sidebar-config")
+def get_sidebar_config(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+             raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        config = None
+        if db_user.sidebar_config:
+            try:
+                config = json.loads(db_user.sidebar_config)
+            except:
+                pass
+        return {"config": config}
+
+@app.put("/api/user/sidebar-config")
+def update_sidebar_config(payload: SidebarConfigUpdateSchema, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+             raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        # Guardar como JSON string
+        try:
+            db_user.sidebar_config = json.dumps(payload.config)
+            sess.commit()
+        except Exception as e:
+            sess.rollback()
+            raise HTTPException(status_code=500, detail=f"Error guardando configuración: {str(e)}")
+            
+        return {"status": "updated", "config": payload.config}
 
 # --- Gestión de Usuarios (Admin) ---
 
@@ -497,7 +583,8 @@ def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: 
                     link = UserServerLink(
                         user_id=user_id,
                         server_id=s_int_id,
-                        receive_alerts=item.receive_alerts
+                        receive_alerts=item.receive_alerts,
+                        postman_access_level=item.postman_access_level
                     )
                     sess.add(link)
         
@@ -516,7 +603,8 @@ def get_user_servers(user_id: int, user: dict = Depends(require_admin)):
             # Asegurarse de que link.server esté cargado
             res.append({
                 "server_id": link.server.server_id,
-                "receive_alerts": link.receive_alerts
+                "receive_alerts": link.receive_alerts,
+                "postman_access_level": link.postman_access_level
             })
         return res
 
@@ -550,20 +638,35 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
         cfg_map = {c.server_id: c.enabled for c in configs}
         db_user = sess.get(User, user["user_id"])
+        
+        results = []
+        
         if db_user and not db_user.is_admin:
-            servers = [link.server for link in db_user.server_links if link.server]
+            # User sees only assigned servers
+            for link in db_user.server_links:
+                if link.server:
+                    results.append({
+                        "server_id": link.server.server_id,
+                        "created_at": str(link.server.created_at),
+                        "group_name": link.server.group_name,
+                        "report_interval": link.server.report_interval,
+                        "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                        "postman_access_level": link.postman_access_level
+                    })
         else:
+            # Admin sees all servers
             servers = sess.execute(select(Server)).scalars().all()
-        return [
-            {
-                "server_id": s.server_id, 
-                "created_at": str(s.created_at), 
-                "group_name": s.group_name,
-                "report_interval": s.report_interval,
-                "data_monitoring_enabled": cfg_map.get(s.server_id, False)
-            } 
-            for s in servers
-        ]
+            for s in servers:
+                results.append({
+                    "server_id": s.server_id,
+                    "created_at": str(s.created_at),
+                    "group_name": s.group_name,
+                    "report_interval": s.report_interval,
+                    "data_monitoring_enabled": cfg_map.get(s.server_id, False),
+                    "postman_access_level": "admin"
+                })
+                
+        return results
 
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):
@@ -638,6 +741,13 @@ def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
                 rule_emails = json.loads(rule.emails)
                 if isinstance(rule_emails, list):
                     recipients.extend(rule_emails)
+            except:
+                pass
+
+            try:
+                extra = json.loads(rule.extra_emails or "[]")
+                if isinstance(extra, list):
+                    recipients.extend(extra)
             except:
                 pass
                 
@@ -721,6 +831,7 @@ def list_alert_rules(user: dict = Depends(require_admin)):
                 server_scope=r.server_scope,
                 target_id=r.target_id,
                 emails=emails_list,
+                extra_emails=json.loads(r.extra_emails) if r.extra_emails else [],
                 created_at=r.created_at
             ))
         return res
@@ -732,7 +843,8 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             alert_type=payload.alert_type,
             server_scope=payload.server_scope,
             target_id=payload.target_id,
-            emails=json.dumps(payload.emails)
+            emails=json.dumps(payload.emails),
+            extra_emails=json.dumps(payload.extra_emails)
         )
         sess.add(new_rule)
         sess.commit()
@@ -744,6 +856,7 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             server_scope=new_rule.server_scope,
             target_id=new_rule.target_id,
             emails=payload.emails,
+            extra_emails=payload.extra_emails,
             created_at=new_rule.created_at
         )
 
@@ -955,7 +1068,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             disk_free=payload.disk.free,
             disk_percent=payload.disk.percent,
             docker_running=payload.docker.running_containers,
-            docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers])
+            docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
+            services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]"
         )
         sess.add(m)
         sess.commit()
@@ -1034,6 +1148,35 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             import traceback
             traceback.print_exc()
             print(f"Error checking alerts: {e}")
+        
+        # --- Service Monitoring Logic ---
+        try:
+            prev_cache = _cache.get(payload.server_id)
+            if prev_cache and len(prev_cache) > 0:
+                last_entry = prev_cache[-1]
+                last_services = {s["name"]: s for s in last_entry.get("services", [])}
+                curr_services = {s.name: s for s in payload.services} if payload.services else {}
+                
+                for name, curr_s in curr_services.items():
+                    prev_s = last_services.get(name)
+                    if prev_s and prev_s.get("status") != curr_s.status:
+                        # Status changed
+                        msg = f"El servicio '{curr_s.display_name or name}' cambió de estado: {prev_s.get('status')} -> {curr_s.status}"
+                        # Check for service alert recipients
+                        recipients, _ = get_alert_recipients(sess, srv, "service_status")
+                        
+                        print(f"[ALERT] Service status change detected for {srv.server_id}: {msg}")
+                        send_alert_email(
+                            server_id=payload.server_id, 
+                            alert_type="Cambio de Estado de Servicio", 
+                            current_value=0, 
+                            threshold=0, 
+                            extra_recipients=recipients,
+                            full_metrics=payload.model_dump(),
+                            custom_message=msg
+                        )
+        except Exception as e:
+            print(f"Error checking service alerts: {e}")
 
         # Actualizar caché en memoria
         try:
@@ -1044,6 +1187,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 "cpu": payload.cpu.model_dump(),
                 "disk": payload.disk.model_dump(),
                 "docker": payload.docker.model_dump(),
+                "services": [s.model_dump() for s in payload.services] if payload.services else []
             }
             buf = _cache.get(payload.server_id)
             if not buf:
@@ -1081,6 +1225,7 @@ def metrics_history(server_id: Optional[str] = None, limit: int = 100, user: dic
                     "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
                     "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
                     "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
+                    "services": json.loads(r.services or "[]")
                 }
             data = [row_to_dict(r) for r in rows]
             if server_id:
@@ -1162,9 +1307,48 @@ def list_data_monitoring(
     environment: Optional[str] = None,
     app_name: Optional[str] = None,
     entity_id: Optional[str] = None,
-    user: dict = Depends(require_data_monitoring_access)
+    user: dict = Depends(get_current_user_from_token)
 ):
     with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        # Check permissions
+        has_permission = False
+        if db_user.is_admin:
+            has_permission = True
+        else:
+            # Check global flag
+            cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == db_user.id)).scalar_one_or_none()
+            if cfg and cfg.enabled:
+                has_permission = True
+            
+            # Check granular server permission if entity_id provided
+            if not has_permission and entity_id:
+                srv = sess.execute(select(Server).where(Server.server_id == entity_id)).scalar_one_or_none()
+                if srv:
+                     link = sess.execute(select(UserServerLink).where(
+                         UserServerLink.user_id == db_user.id,
+                         UserServerLink.server_id == srv.id
+                     )).scalar_one_or_none()
+                     if link and link.postman_access_level in ('view', 'edit', 'admin'):
+                         has_permission = True
+
+        if not has_permission:
+            raise HTTPException(status_code=403, detail="No tienes permiso para ver estos datos")
+
+        # Audit Log
+        if entity_id:
+             sess.add(AuditLog(
+                 action="view_postman_data",
+                 target_type="server",
+                 target_id=entity_id,
+                 user_email=db_user.email,
+                 changes=json.dumps({"env": environment, "app": app_name})
+             ))
+             sess.commit()
+
         query = select(DataMonitoring).order_by(DataMonitoring.id.desc())
 
         if environment:
@@ -1218,6 +1402,113 @@ def export_data_monitoring(user: dict = Depends(require_data_monitoring_access))
         response = StreamingResponse(iter([output.getvalue()]), media_type="text/csv")
         response.headers["Content-Disposition"] = "attachment; filename=data_monitoring.csv"
         return response
+
+# --- Service Management ---
+
+@app.post("/api/servers/{server_id}/services/action", response_model=AgentCommandResponse)
+def execute_service_action(server_id: str, payload: ServiceActionSchema, user: dict = Depends(require_admin)):
+    """
+    Queue a command to start/stop/restart a service on the agent.
+    """
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        
+        # Validar comando
+        if payload.action not in ["start", "stop", "restart", "update"]:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        # Crear comando pendiente
+        command = AgentCommand(
+            server_id=server.server_id,
+            command=f"service_{payload.action}",
+            params=json.dumps({"service": payload.service}),
+            status="pending"
+        )
+        sess.add(command)
+        sess.commit()
+        sess.refresh(command)
+        return command
+
+@app.post("/api/servers/{server_id}/services/bulk-action", response_model=List[AgentCommandResponse])
+def execute_bulk_service_action(server_id: str, payload: BulkServiceActionSchema, user: dict = Depends(require_admin)):
+    """
+    Queue commands to start/stop/restart multiple services on the agent.
+    """
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        
+        # Validar comando
+        if payload.action not in ["start", "stop", "restart", "update"]:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        commands = []
+        for service_name in payload.services:
+            # Crear comando pendiente para cada servicio
+            command = AgentCommand(
+                server_id=server.server_id,
+                command=f"service_{payload.action}",
+                params=json.dumps({"service": service_name}),
+                status="pending"
+            )
+            sess.add(command)
+            commands.append(command)
+        
+        sess.commit()
+        # Refresh all commands to get their IDs
+        for cmd in commands:
+            sess.refresh(cmd)
+            
+        return commands
+
+@app.get("/api/servers/{server_id}/commands/pending", response_model=List[AgentCommandResponse])
+def get_pending_commands(server_id: str, x_auth_token: Optional[str] = Header(None)):
+    """
+    Endpoint for the AGENT to poll pending commands.
+    """
+    if not x_auth_token:
+        raise HTTPException(status_code=401, detail="Missing auth token")
+        
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server or server.token != x_auth_token:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+            
+        commands = sess.execute(
+            select(AgentCommand)
+            .where(AgentCommand.server_id == server_id)
+            .where(AgentCommand.status == "pending")
+            .order_by(AgentCommand.created_at.asc())
+        ).scalars().all()
+        
+        return commands
+
+@app.post("/api/servers/{server_id}/commands/{command_id}/result")
+def update_command_result(server_id: str, command_id: int, result: dict, x_auth_token: Optional[str] = Header(None)):
+    """
+    Endpoint for the AGENT to report command execution result.
+    """
+    if not x_auth_token:
+        raise HTTPException(status_code=401, detail="Missing auth token")
+        
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server or server.token != x_auth_token:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+            
+        command = sess.get(AgentCommand, command_id)
+        if not command or command.server_id != server_id:
+            raise HTTPException(status_code=404, detail="Command not found")
+            
+        command.status = result.get("status", "executed")
+        command.result = json.dumps(result.get("output", {}))
+        command.executed_at = func.now()
+        sess.commit()
+        
+    return {"status": "ok"}
 
 # --- Servir Frontend con Cache Busting (debe ir al final) ---
 import re
