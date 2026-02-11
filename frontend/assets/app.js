@@ -357,14 +357,43 @@ function ServiceManager({ services, serverId }) {
 }
 
 function SidebarSettingsModal({ config, setConfig, onClose }) {
+    const [activeTab, setActiveTab] = useState('sections');
+    const [sectionsExpanded, setSectionsExpanded] = useState(true);
+    const [saveState, setSaveState] = useState('idle');
+    const [error, setError] = useState('');
+    const overlayRef = useRef(null);
+
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [onClose]);
+
+    useEffect(() => {
+        if (saveState === 'saved') {
+            const t = setTimeout(() => setSaveState('idle'), 1500);
+            return () => clearTimeout(t);
+        }
+    }, [saveState]);
+
     const update = (newSections) => {
         const newConfig = { ...config, sections: newSections };
         setConfig(newConfig);
+        setSaveState('saving');
+        setTimeout(() => setSaveState('saved'), 400);
     };
 
     const toggle = (index) => {
         const newSections = [...config.sections];
         newSections[index].visible = !newSections[index].visible;
+        const visibleCount = newSections.filter(s => s.visible).length;
+        if (visibleCount === 0) {
+            setError('Debe haber al menos una sección visible');
+            return;
+        }
+        setError('');
         update(newSections);
     };
 
@@ -378,25 +407,103 @@ function SidebarSettingsModal({ config, setConfig, onClose }) {
         update(newSections);
     };
 
-    return React.createElement('div', { className: 'modal-overlay' },
-        React.createElement('div', { className: 'card', style: { width: 400 } },
-            React.createElement('div', { className: 'card-title', style: { marginBottom: 20 } }, '🛠️ Configuración de Panel'),
+    const handleOverlayClick = (e) => {
+        if (e.target === overlayRef.current) onClose();
+    };
+
+    const visibleCount = (config.sections || []).filter(s => s.visible).length;
+    const totalSections = (config.sections || []).length || 1;
+    const usagePercent = Math.round((visibleCount / totalSections) * 100);
+
+    const handleReset = () => {
+        const resetSections = (config.sections || []).map(s => ({ ...s, visible: true }));
+        setError('');
+        update(resetSections);
+    };
+
+    return React.createElement('div', { className: 'modal-overlay', ref: overlayRef, onClick: handleOverlayClick },
+        React.createElement('div', { className: 'card', style: { width: 520, maxWidth: '80vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', fontSize: '14px' } },
+            React.createElement('button', { 
+                className: 'secondary', 
+                onClick: onClose, 
+                style: { position: 'absolute', top: 10, right: 10, padding: '2px 8px', fontSize: '0.75rem' } 
+            }, '✕'),
+            React.createElement('div', { style: { marginBottom: 16 } },
+                React.createElement('div', { className: 'card-title', style: { marginBottom: 4 } }, '🛠️ Configuración de Panel'),
+                React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)' } }, 'Elige qué secciones se muestran y el orden en el dashboard.')
+            ),
+            React.createElement('div', { style: { display: 'flex', gap: 8, marginBottom: 12 } },
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: () => setActiveTab('sections'),
+                    style: { padding: '4px 10px', fontSize: '0.8rem', borderColor: activeTab === 'sections' ? 'var(--primary)' : 'var(--border)', color: activeTab === 'sections' ? 'var(--primary)' : 'var(--text-main)' }
+                }, '🧩 Secciones'),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: () => setActiveTab('general'),
+                    style: { padding: '4px 10px', fontSize: '0.8rem', borderColor: activeTab === 'general' ? 'var(--primary)' : 'var(--border)', color: activeTab === 'general' ? 'var(--primary)' : 'var(--text-main)' }
+                }, '⚙️ General')
+            ),
+            React.createElement('div', { style: { marginBottom: 12 } },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 } },
+                    React.createElement('span', null, 'Uso del panel'),
+                    React.createElement('span', null, visibleCount + '/' + totalSections + ' secciones')
+                ),
+                React.createElement('div', { style: { height: 6, borderRadius: 999, background: 'var(--bg-body)', overflow: 'hidden' } },
+                    React.createElement('div', { style: { width: usagePercent + '%', height: '100%', background: 'var(--primary)' } })
+                )
+            ),
+            activeTab === 'sections' && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                React.createElement('div', { 
+                    style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', marginBottom: 4 }, 
+                    onClick: () => setSectionsExpanded(!sectionsExpanded)
+                },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                        React.createElement('span', null, '📋'),
+                        React.createElement('span', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Secciones del dashboard')
+                    ),
+                    React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, sectionsExpanded ? 'Contraer' : 'Expandir')
+                ),
+                sectionsExpanded && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
             React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                 config.sections.map((s, i) => 
-                    React.createElement('div', { key: s.id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, border: '1px solid var(--border)', borderRadius: 4 } },
+                    React.createElement('div', { 
+                        key: s.id, 
+                        style: { 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between', 
+                            padding: 10, 
+                            border: '1px solid var(--border)', 
+                            borderRadius: 8,
+                            background: s.visible ? 'rgba(56, 189, 248, 0.05)' : 'transparent'
+                        } 
+                    },
                         React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
-                            React.createElement('input', { type: 'checkbox', checked: s.visible, onChange: () => toggle(i) }),
-                            React.createElement('span', null, s.label)
+                            React.createElement('input', { type: 'checkbox', checked: s.visible, onChange: () => toggle(i), style: { width: 'auto' } }),
+                            React.createElement('div', null,
+                                React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, s.label),
+                                React.createElement('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, i === 0 ? 'Sección principal' : `Posición ${i + 1}`)
+                            )
                         ),
                         React.createElement('div', { style: { display: 'flex', gap: 5 } },
-                            React.createElement('button', { className: 'secondary', disabled: i === 0, onClick: () => move(i, -1), style: { padding: '2px 6px' } }, '⬆'),
-                            React.createElement('button', { className: 'secondary', disabled: i === config.sections.length - 1, onClick: () => move(i, 1), style: { padding: '2px 6px' } }, '⬇')
+                            React.createElement('button', { className: 'secondary', disabled: i === 0, onClick: () => move(i, -1), style: { padding: '4px 8px', fontSize: '0.8rem' } }, '⬆ Arriba'),
+                            React.createElement('button', { className: 'secondary', disabled: i === config.sections.length - 1, onClick: () => move(i, 1), style: { padding: '4px 8px', fontSize: '0.8rem' } }, '⬇ Abajo')
                         )
                     )
                 )
             ),
-            React.createElement('div', { style: { marginTop: 25, textAlign: 'right' } },
-                 React.createElement('button', { onClick: onClose }, 'Cerrar')
+                )
+            ),
+            activeTab === 'general' && React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)', paddingTop: 8 } }, 'Configuraciones generales adicionales se pueden agregar aquí.'),
+            error && React.createElement('div', { style: { marginTop: 10, fontSize: '0.8rem', color: 'var(--danger)' } }, error),
+            React.createElement('div', { style: { marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                    React.createElement('button', { className: 'secondary', style: { padding: '4px 8px', fontSize: '0.8rem' }, onClick: handleReset }, '⟳ Restablecer'),
+                    saveState === 'saving' && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Guardando...'),
+                    saveState === 'saved' && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--success)' } }, 'Guardado')
+                ),
+                React.createElement('button', { className: 'secondary', onClick: onClose }, 'Cerrar')
             )
         )
     );
@@ -706,8 +813,6 @@ function AdminPanel() {
   );
 }
 
-// --- DASHBOARD COMPONENT ---
-
 function DataMonitoringDashboard({ currentServer, userInfo }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -716,7 +821,14 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const res = await fetchJSON('/api/data-monitoring?limit=50');
+      if (!currentServer) {
+        setData([]);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      const url = '/api/data-monitoring?limit=50&entity_id=' + encodeURIComponent(currentServer.server_id);
+      const res = await fetchJSON(url);
       setData(res);
       setError(null);
     } catch (err) { setError(err.message); } 
@@ -727,20 +839,31 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentServer && currentServer.server_id]);
 
   const flowCounts = {};
   data.forEach(d => { const f = d.flow || 'Unknown'; flowCounts[f] = (flowCounts[f] || 0) + 1; });
   const chartLabels = Object.keys(flowCounts);
   const chartData = Object.values(flowCounts);
 
-  if (!userInfo || (!userInfo.is_admin && !userInfo.can_view_data_monitoring)) return null;
-  if (!currentServer || !currentServer.data_monitoring_enabled) return null;
-  
-  const accessLevel = currentServer.postman_access_level || 'none';
-  if (accessLevel === 'none' && !userInfo.is_admin) return React.createElement('div', { className: 'card' }, '⛔ Acceso denegado al panel Postman');
+  if (!userInfo) return null;
 
-  const canEdit = accessLevel === 'edit' || accessLevel === 'admin' || userInfo.is_admin;
+  const isAdmin = !!userInfo.is_admin;
+  const hasGlobalDM = !!userInfo.can_view_data_monitoring;
+
+  if (!currentServer || !currentServer.data_monitoring_enabled) {
+    if (isAdmin || hasGlobalDM) {
+      return React.createElement('div', { className: 'card' }, 'Este servidor no tiene el dashboard de Postman habilitado');
+    }
+    return null;
+  }
+
+  const accessLevel = currentServer.postman_access_level || 'none';
+  if (!isAdmin && !hasGlobalDM && accessLevel === 'none') {
+    return React.createElement('div', { className: 'card' }, '⛔ Acceso denegado al panel Postman');
+  }
+
+  const canEdit = accessLevel === 'edit' || accessLevel === 'admin' || isAdmin;
 
   return React.createElement('div', { className: 'card' },
     React.createElement('div', { className: 'card-header' },
@@ -795,6 +918,8 @@ function App() {
   const [authed, setAuthed] = useState(!!getDashboardToken());
   const [userInfo, setUserInfo] = useState(getUserInfo());
   const [currentView, setCurrentView] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const inactivityTimerRef = useRef(null);
   
   // Sidebar Config
   const [sidebarConfig, setSidebarConfig] = useState(() => {
@@ -849,6 +974,24 @@ function App() {
       
       return () => clearTimeout(timer);
   }, [sidebarConfig, authed]);
+
+  useEffect(() => {
+      if (!authed) return;
+      const handleActivity = () => {
+          if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+          inactivityTimerRef.current = setTimeout(() => {
+              setSidebarCollapsed(true);
+          }, 3000);
+      };
+      window.addEventListener('mousemove', handleActivity);
+      window.addEventListener('keydown', handleActivity);
+      handleActivity();
+      return () => {
+          window.removeEventListener('mousemove', handleActivity);
+          window.removeEventListener('keydown', handleActivity);
+          if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      };
+  }, [authed]);
 
   const [showSidebarSettings, setShowSidebarSettings] = useState(false);
 
@@ -935,18 +1078,34 @@ function App() {
     );
   }
 
-  const Sidebar = () => React.createElement('div', { className: 'sidebar' },
+  const Sidebar = () => React.createElement('div', { className: sidebarCollapsed ? 'sidebar sidebar-collapsed' : 'sidebar', onMouseEnter: () => { if (sidebarCollapsed) setSidebarCollapsed(false); } },
     React.createElement('div', { className: 'sidebar-header' }, 
-        React.createElement('span', { style: { marginRight: 8 } }, '⚡'), 'ServPulse'
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 1 } },
+            React.createElement('span', null, '⚡'),
+            !sidebarCollapsed && React.createElement('span', null, 'ServPulse')
+        ),
+        React.createElement('button', { 
+            className: 'secondary', 
+            onClick: () => setSidebarCollapsed(!sidebarCollapsed),
+            style: { padding: '4px 8px', fontSize: '0.75rem' } 
+        }, sidebarCollapsed ? '⮞' : '⮜')
     ),
     React.createElement('div', { className: 'sidebar-nav' },
-        React.createElement('div', { className: `nav-item ${currentView === 'dashboard' ? 'active' : ''}`, onClick: () => setCurrentView('dashboard') }, '📊 Dashboard'),
-        userInfo?.is_admin && React.createElement('div', { className: `nav-item ${currentView === 'admin' ? 'active' : ''}`, onClick: () => setCurrentView('admin') }, '⚙️ Administración')
+        React.createElement('div', { className: `nav-item ${currentView === 'dashboard' ? 'active' : ''}`, onClick: () => setCurrentView('dashboard') }, sidebarCollapsed ? '📊' : '📊 Dashboard'),
+        userInfo?.is_admin && React.createElement('div', { className: `nav-item ${currentView === 'admin' ? 'active' : ''}`, onClick: () => setCurrentView('admin') }, sidebarCollapsed ? '⚙️' : '⚙️ Administración')
     ),
     React.createElement('div', { className: 'sidebar-footer' },
-        React.createElement('button', { className: 'secondary', style: { width: '100%', marginBottom: 10, fontSize: '0.85rem' }, onClick: () => setShowSidebarSettings(true) }, '🛠️ Configuración Panel'),
-        React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 10, color: 'var(--text-muted)' } }, userInfo?.name),
-        React.createElement('button', { className: 'secondary', style: { width: '100%' }, onClick: handleLogout }, 'Salir')
+        React.createElement('button', { 
+            className: 'secondary', 
+            style: { width: '100%', marginBottom: 10, fontSize: '0.85rem' }, 
+            onClick: () => setShowSidebarSettings(true) 
+        }, sidebarCollapsed ? '🛠️' : '🛠️ Configuración Panel'),
+        !sidebarCollapsed && React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 10, color: 'var(--text-muted)' } }, userInfo?.name),
+        React.createElement('button', { 
+            className: 'secondary', 
+            style: { width: '100%' }, 
+            onClick: handleLogout 
+        }, sidebarCollapsed ? '⏻' : 'Salir')
     )
   );
 
@@ -1027,7 +1186,7 @@ function App() {
 
   return React.createElement('div', { className: 'app-container' },
     React.createElement(Sidebar),
-    React.createElement('main', { className: 'main-content' },
+    React.createElement('main', { className: sidebarCollapsed ? 'main-content main-content-collapsed' : 'main-content' },
         currentView === 'dashboard' ? React.createElement(DashboardView) : React.createElement(AdminPanel)
     ),
     showSidebarSettings && React.createElement(SidebarSettingsModal, { config: sidebarConfig, setConfig: setSidebarConfig, onClose: () => setShowSidebarSettings(false) })
