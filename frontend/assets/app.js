@@ -421,6 +421,15 @@ function SidebarSettingsModal({ config, setConfig, onClose }) {
         update(resetSections);
     };
 
+    const general = config.general || {};
+
+    const updateGeneral = (patch) => {
+        const newConfig = { ...config, general: { ...general, ...patch } };
+        setConfig(newConfig);
+        setSaveState('saving');
+        setTimeout(() => setSaveState('saved'), 400);
+    };
+
     return React.createElement('div', { className: 'modal-overlay', ref: overlayRef, onClick: handleOverlayClick },
         React.createElement('div', { className: 'card', style: { width: 520, maxWidth: '80vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', fontSize: '14px' } },
             React.createElement('button', { 
@@ -495,7 +504,33 @@ function SidebarSettingsModal({ config, setConfig, onClose }) {
             ),
                 )
             ),
-            activeTab === 'general' && React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)', paddingTop: 8 } }, 'Configuraciones generales adicionales se pueden agregar aquí.'),
+            activeTab === 'general' && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 } },
+                React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-element)', display: 'flex', flexDirection: 'column', gap: 4 } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                            React.createElement('span', null, '📌'),
+                            React.createElement('span', { style: { fontWeight: 500, fontSize: '0.9rem' } }, 'Resumen del panel')
+                        ),
+                        React.createElement('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, visibleCount + '/' + totalSections + ' secciones activas')
+                    ),
+                    React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Ajusta estos parámetros para adaptar el dashboard a tu forma de trabajar.')
+                ),
+                React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+                    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+                        React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Retracción automática del panel lateral'),
+                        React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Oculta el panel cuando no hay actividad para ganar espacio.')
+                    ),
+                    React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+                        React.createElement('input', {
+                            type: 'checkbox',
+                            checked: general.autoCollapseSidebar !== false,
+                            onChange: (e) => updateGeneral({ autoCollapseSidebar: e.target.checked }),
+                            style: { width: 'auto' }
+                        }),
+                        React.createElement('span', null, general.autoCollapseSidebar !== false ? 'Activado' : 'Desactivado')
+                    )
+                )
+            ),
             error && React.createElement('div', { style: { marginTop: 10, fontSize: '0.8rem', color: 'var(--danger)' } }, error),
             React.createElement('div', { style: { marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
@@ -515,15 +550,19 @@ function ServerAssignmentModal({ user, onClose }) {
     const [allServers, setAllServers] = useState([]);
     const [assignments, setAssignments] = useState({});
     const [loading, setLoading] = useState(true);
+    const [groups, setGroups] = useState([]);
+    const [selectedGroup, setSelectedGroup] = useState('');
 
     useEffect(() => {
         const load = async () => {
             try {
-                const [serversData, assignedData] = await Promise.all([
+                const [serversData, assignedData, groupsData] = await Promise.all([
                     fetchJSON('/api/servers'),
-                    fetchJSON(`/api/admin/users/${user.id}/servers`)
+                    fetchJSON(`/api/admin/users/${user.id}/servers`),
+                    fetchJSON('/api/admin/groups')
                 ]);
                 setAllServers(serversData);
+                setGroups(groupsData);
                 const map = {};
                 serversData.forEach(s => { map[s.server_id] = { assigned: false, alerts: true, postman: 'none' }; });
                 assignedData.forEach(a => {
@@ -543,6 +582,34 @@ function ServerAssignmentModal({ user, onClose }) {
     const toggleAssigned = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], assigned: !p[sid].assigned}}));
     const toggleAlerts = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], alerts: !p[sid].alerts}}));
     const setPostman = (sid, val) => setAssignments(p => ({...p, [sid]: {...p[sid], postman: val}}));
+
+    const bulkAssignGroupAdmin = () => {
+        if (!selectedGroup) return;
+        setAssignments(prev => {
+            const next = { ...prev };
+            allServers.forEach(s => {
+                if (s.group_name === selectedGroup) {
+                    const st = next[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    next[s.server_id] = { ...st, assigned: true, alerts: true, postman: 'admin' };
+                }
+            });
+            return next;
+        });
+    };
+
+    const bulkUnassignGroup = () => {
+        if (!selectedGroup) return;
+        setAssignments(prev => {
+            const next = { ...prev };
+            allServers.forEach(s => {
+                if (s.group_name === selectedGroup) {
+                    const st = next[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    next[s.server_id] = { ...st, assigned: false };
+                }
+            });
+            return next;
+        });
+    };
     
     const handleSave = async () => {
         try {
@@ -557,14 +624,36 @@ function ServerAssignmentModal({ user, onClose }) {
     };
 
     return React.createElement('div', { className: 'modal-overlay' },
-        React.createElement('div', { className: 'card', style: { width: 600, maxHeight: '80vh', overflowY: 'auto' } },
+        React.createElement('div', { className: 'card', style: { width: 640, maxHeight: '80vh', overflowY: 'auto' } },
             React.createElement('div', { className: 'card-title', style: { marginBottom: 10 } }, `Asignar a ${user.name || user.email}`),
+            !loading && groups.length > 0 && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontSize: '0.85rem' } },
+                React.createElement('span', { style: { color: 'var(--text-muted)' } }, 'Admin de grupo:'),
+                React.createElement('select', { 
+                    value: selectedGroup, 
+                    onChange: e => setSelectedGroup(e.target.value),
+                    style: { fontSize: '0.8rem' }
+                },
+                    React.createElement('option', { value: '' }, 'Selecciona un grupo'),
+                    groups.map(g => React.createElement('option', { key: g.id, value: g.name }, g.name))
+                ),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: bulkAssignGroupAdmin, 
+                    disabled: !selectedGroup 
+                }, 'Asignar todos como Admin'),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: bulkUnassignGroup, 
+                    disabled: !selectedGroup 
+                }, 'Quitar del grupo')
+            ),
             loading ? 'Cargando...' : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
                 allServers.map(s => {
-                    const st = assignments[s.server_id] || { assigned: false, alerts: true };
+                    const st = assignments[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    const label = s.group_name ? `${s.server_id} (${s.group_name})` : s.server_id;
                     return React.createElement('div', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--border)', borderRadius: 6, background: st.assigned ? 'var(--bg-element)' : 'transparent' } },
                         React.createElement('input', { type: 'checkbox', checked: st.assigned, onChange: () => toggleAssigned(s.server_id), style: { width: 'auto' } }),
-                        React.createElement('span', { style: { flex: 1, fontWeight: 500 } }, s.server_id),
+                        React.createElement('span', { style: { flex: 1, fontWeight: 500 } }, label),
                         st.assigned && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
                             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' } },
                                 React.createElement('input', { type: 'checkbox', checked: st.alerts, onChange: () => toggleAlerts(s.server_id), style: { width: 'auto' } }), 'Alertas'
@@ -627,15 +716,22 @@ function UserEditModal({ user, onClose, onSave }) {
 
 function ServerGroupManager() {
   const [groups, setGroups] = useState([]);
+  const [servers, setServers] = useState([]);
   const [newGroup, setNewGroup] = useState('');
+  const [savingServer, setSavingServer] = useState('');
 
-  const load = () => fetchJSON('/api/admin/groups').then(setGroups).catch(console.error);
+  const load = () => {
+    fetchJSON('/api/admin/groups').then(setGroups).catch(console.error);
+    fetchJSON('/api/servers').then(setServers).catch(console.error);
+  };
+
   useEffect(() => { load(); }, []);
 
   const createGroup = async () => {
-    if (!newGroup) return;
+    const name = newGroup.trim();
+    if (!name) return;
     try {
-      await fetchJSON('/api/admin/groups', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: newGroup }) });
+      await fetchJSON('/api/admin/groups', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
       setNewGroup('');
       load();
     } catch (e) { alert(e.message); }
@@ -649,17 +745,100 @@ function ServerGroupManager() {
     } catch (e) { alert(e.message); }
   };
 
+  const updateServerGroup = async (serverId, groupName) => {
+    try {
+      setSavingServer(serverId);
+      await fetchJSON(`/api/admin/servers/${encodeURIComponent(serverId)}/group`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ group_name: groupName || null })
+      });
+      setServers(prev => prev.map(s => s.server_id === serverId ? { ...s, group_name: groupName || null } : s));
+    } catch (e) { alert(e.message); }
+    finally {
+      setSavingServer('');
+    }
+  };
+
+  const groupCounts = {};
+  servers.forEach(s => {
+    const g = s.group_name || '';
+    groupCounts[g] = (groupCounts[g] || 0) + 1;
+  });
+  const ungroupedCount = groupCounts[''] || 0;
+
   return React.createElement('div', { className: 'card' },
-    React.createElement('div', { className: 'card-title' }, 'Grupos de Servidores'),
-    React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 20 } },
-      React.createElement('input', { placeholder: 'Nombre del grupo', value: newGroup, onChange: e => setNewGroup(e.target.value) }),
-      React.createElement('button', { onClick: createGroup }, 'Crear')
+    React.createElement('div', { className: 'card-header' },
+      React.createElement('div', { className: 'card-title' }, 'Grupos de Servidores'),
+      React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.length + ' servidores')
     ),
-    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-      groups.map(g => 
-        React.createElement('div', { key: g.id, style: { display: 'flex', justifyContent: 'space-between', padding: 10, border: '1px solid var(--border)', borderRadius: 6 } },
-          React.createElement('span', null, g.name),
-          React.createElement('button', { className: 'secondary', style: { padding: '2px 8px', fontSize: '0.8rem' }, onClick: () => deleteGroup(g.id) }, 'Eliminar')
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 260px) minmax(0, 1fr)', gap: 20, alignItems: 'flex-start' } },
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        React.createElement('div', { style: { display: 'flex', gap: 8 } },
+          React.createElement('input', { placeholder: 'Nombre del grupo', value: newGroup, onChange: e => setNewGroup(e.target.value) }),
+          React.createElement('button', { onClick: createGroup }, 'Crear')
+        ),
+        React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Organiza los servidores en grupos lógicos (por cliente, entorno, sucursal, etc.).'),
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 } },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4 } },
+            React.createElement('span', null, 'Grupos'),
+            React.createElement('span', null, 'Servidores')
+          ),
+          groups.length === 0 && React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Sin grupos creados'),
+          groups.map(g => 
+            React.createElement('div', { key: g.id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, borderRadius: 6, background: 'var(--bg-element)' } },
+              React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+                React.createElement('span', { style: { fontSize: '0.9rem', fontWeight: 500 } }, g.name),
+                React.createElement('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, (groupCounts[g.name] || 0) + ' servidores')
+              ),
+              React.createElement('button', { 
+                className: 'secondary', 
+                style: { padding: '2px 8px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }, 
+                onClick: () => deleteGroup(g.id),
+                disabled: (groupCounts[g.name] || 0) > 0
+              }, (groupCounts[g.name] || 0) > 0 ? 'En uso' : 'Eliminar')
+            )
+          ),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 } }, 'Sin grupo: ' + ungroupedCount)
+        )
+      ),
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Asignación de servidores a grupos'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Haz clic en el grupo para cambiarlo')
+        ),
+        React.createElement('div', { style: { overflowX: 'auto' } },
+          React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' } },
+            React.createElement('thead', null,
+              React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid var(--border)' } },
+                React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
+                React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
+                React.createElement('th', { style: { padding: 8 } }, 'Estado')
+              )
+            ),
+            React.createElement('tbody', null,
+              servers.length === 0
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 3, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
+                : servers.map(s =>
+                    React.createElement('tr', { key: s.server_id, style: { borderBottom: '1px solid var(--border)' } },
+                      React.createElement('td', { style: { padding: 8 } }, s.server_id),
+                      React.createElement('td', { style: { padding: 8 } },
+                        React.createElement('select', {
+                          value: s.group_name || '',
+                          onChange: e => updateServerGroup(s.server_id, e.target.value),
+                          style: { fontSize: '0.8rem' }
+                        },
+                          React.createElement('option', { value: '' }, 'Sin grupo'),
+                          groups.map(g => React.createElement('option', { key: g.id, value: g.name }, g.name))
+                        )
+                      ),
+                      React.createElement('td', { style: { padding: 8, fontSize: '0.8rem', color: 'var(--text-muted)' } },
+                        savingServer === s.server_id ? 'Guardando...' : 'Listo'
+                      )
+                    )
+                  )
+            )
+          )
         )
       )
     )
@@ -932,15 +1111,18 @@ function App() {
           const s = localStorage.getItem('sidebar_config');
           if (s) {
               const parsed = JSON.parse(s);
-              // Migrate old config if needed
               if (!parsed.sections) {
                   return {
                       sections: [
                           { id: 'containers', label: '🐳 Monitor Contenedores', visible: parsed.showContainers !== false },
                           { id: 'services', label: '⚙️ Gestión Servicios', visible: parsed.showServices !== false },
                           { id: 'postman', label: '📊 Postman Dashboard', visible: parsed.showPostman !== false }
-                      ]
+                      ],
+                      general: { autoCollapseSidebar: true }
                   };
+              }
+              if (!parsed.general) {
+                  parsed.general = { autoCollapseSidebar: true };
               }
               return parsed;
           }
@@ -952,7 +1134,8 @@ function App() {
               { id: 'containers', label: '🐳 Monitor Contenedores', visible: true },
               { id: 'services', label: '⚙️ Gestión Servicios', visible: true },
               { id: 'postman', label: '📊 Postman Dashboard', visible: true }
-          ]
+          ],
+          general: { autoCollapseSidebar: true }
       };
   });
   
@@ -977,6 +1160,8 @@ function App() {
 
   useEffect(() => {
       if (!authed) return;
+      const autoCollapse = !sidebarConfig.general || sidebarConfig.general.autoCollapseSidebar !== false;
+      if (!autoCollapse) return;
       const handleActivity = () => {
           if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
           inactivityTimerRef.current = setTimeout(() => {
@@ -991,7 +1176,7 @@ function App() {
           window.removeEventListener('keydown', handleActivity);
           if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
       };
-  }, [authed]);
+  }, [authed, sidebarConfig.general && sidebarConfig.general.autoCollapseSidebar]);
 
   const [showSidebarSettings, setShowSidebarSettings] = useState(false);
 

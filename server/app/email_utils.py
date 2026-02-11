@@ -87,19 +87,18 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
                     </tr>
                 </table>
         """
+    metrics_html = ""
     if full_metrics:
         try:
             mem = full_metrics.get('memory', {})
             disk = full_metrics.get('disk', {})
             cpu = full_metrics.get('cpu', {})
             
-            # Memoria (MB)
             mem_total = mem.get('total', 0)
             mem_used = mem.get('used', 0)
             mem_free = mem.get('free', 0)
             mem_pct = round((mem_used / mem_total * 100), 1) if mem_total > 0 else 0
             
-            # Disco (GB)
             disk_total = disk.get('total', 0)
             disk_used = disk.get('used', 0)
             disk_free = disk.get('free', 0)
