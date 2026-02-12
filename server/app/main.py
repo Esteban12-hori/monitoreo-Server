@@ -1,14 +1,18 @@
 import json
 from pathlib import Path
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 import os
 import uuid
 import unicodedata
 import io
 import csv
+import logging
+import html
 
-from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
+import requests
+
+from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +25,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from pydantic import BaseModel, Field
 
 from .config import (
     DB_PATH,
@@ -32,6 +37,12 @@ from .config import (
     JWT_SECRET_KEY,
     JWT_ALGORITHM,
     JWT_EXPIRE_MINUTES,
+    WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_VERIFY_TOKEN,
+    WHATSAPP_SESSION_TTL_MINUTES,
+    WHATSAPP_FREE_MAX_SERVERS,
+    WHATSAPP_FAVORITE_SERVERS,
 )
 from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand
 from .schemas import (
@@ -49,7 +60,8 @@ from .email_utils import send_alert_email
 import time
 import asyncio
 import jwt
-from datetime import timedelta
+
+logger = logging.getLogger("whatsapp-bot")
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -69,6 +81,597 @@ engine = get_engine()
 Base.metadata.create_all(engine)
 
 app = FastAPI(title="Monitor Integral")
+
+class WhatsAppSessionState:
+    INICIO = "inicio"
+    PIDIENDO_EMAIL = "pidiendo_email"
+    PIDIENDO_PASSWORD = "pidiendo_password"
+    MENU_PRINCIPAL = "menu_principal"
+    VIENDO_SERVIDOR = "viendo_servidor"
+
+
+class WhatsAppSessionData(dict):
+    pass
+
+
+_wa_sessions: Dict[str, WhatsAppSessionData] = {}
+_wa_favorite_server_ids = {
+    s.strip() for s in (WHATSAPP_FAVORITE_SERVERS or "").split(",") if s.strip()
+}
+
+
+def _wa_get_session(wa_id: str) -> WhatsAppSessionData:
+    now = datetime.utcnow()
+    sess = _wa_sessions.get(wa_id)
+    if not sess:
+        sess = WhatsAppSessionData(
+            wa_id=wa_id,
+            state=WhatsAppSessionState.INICIO,
+            created_at=now.isoformat(),
+            last_activity=now.isoformat(),
+        )
+        _wa_sessions[wa_id] = sess
+        return sess
+    try:
+        last = datetime.fromisoformat(sess.get("last_activity"))
+        delta = now - last
+        if delta.total_seconds() > WHATSAPP_SESSION_TTL_MINUTES * 60:
+            sess = WhatsAppSessionData(
+                wa_id=wa_id,
+                state=WhatsAppSessionState.INICIO,
+                created_at=now.isoformat(),
+                last_activity=now.isoformat(),
+            )
+            _wa_sessions[wa_id] = sess
+            return sess
+    except Exception:
+        sess["created_at"] = now.isoformat()
+    sess["last_activity"] = now.isoformat()
+    return sess
+
+
+def _wa_reset_session(wa_id: str):
+    if wa_id in _wa_sessions:
+        del _wa_sessions[wa_id]
+
+
+def _wa_send_messages(to: str, lines: List[str]) -> None:
+    if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        logger.warning("WhatsApp credentials not configured; skipping send")
+        return
+    body_text = "\n".join(lines).strip()
+    if not body_text:
+        return
+    url = f"https://graph.facebook.com/v17.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "text": {"body": body_text},
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        if resp.status_code >= 400:
+            logger.error(
+                "Error sending WhatsApp message: %s %s",
+                resp.status_code,
+                resp.text,
+            )
+    except Exception as exc:
+        logger.error("Exception sending WhatsApp message: %s", exc)
+
+
+def _wa_format_cpu_bar(percent: float) -> str:
+    try:
+        value = max(0.0, min(100.0, float(percent or 0)))
+    except Exception:
+        value = 0.0
+    total_blocks = 20
+    filled = int(round(value / 100.0 * total_blocks))
+    empty = total_blocks - filled
+    return "█" * filled + "░" * empty
+
+
+def _wa_list_servers_for_user(user_id: int) -> List[Dict[str, Any]]:
+    with Session(engine) as sess:
+        configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
+        cfg_map = {c.server_id: c.enabled for c in configs}
+        db_user = sess.get(User, user_id)
+        if not db_user:
+            return []
+        results: List[Dict[str, Any]] = []
+        if db_user and not db_user.is_admin:
+            for link in db_user.server_links:
+                if link.server:
+                    results.append(
+                        {
+                            "server_id": link.server.server_id,
+                            "group_name": link.server.group_name,
+                            "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                        }
+                    )
+        else:
+            servers = sess.execute(select(Server)).scalars().all()
+            for s in servers:
+                results.append(
+                    {
+                        "server_id": s.server_id,
+                        "group_name": s.group_name,
+                        "data_monitoring_enabled": cfg_map.get(s.server_id, False),
+                    }
+                )
+        return results
+
+
+def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
+    if server_id in _cache and _cache[server_id]:
+        return _cache[server_id][-1]
+    with Session(engine) as sess:
+        row = (
+            sess.execute(
+                select(Metric)
+                .where(Metric.server_id == server_id)
+                .order_by(Metric.id.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "server_id": row.server_id,
+            "ts": str(row.ts),
+            "memory": {
+                "total": row.mem_total,
+                "used": row.mem_used,
+                "free": row.mem_free,
+                "cache": row.mem_cache,
+            },
+            "cpu": {
+                "total": row.cpu_total,
+                "per_core": json.loads(row.cpu_per_core or "[]"),
+            },
+            "disk": {
+                "total": row.disk_total,
+                "used": row.disk_used,
+                "free": row.disk_free,
+                "percent": row.disk_percent,
+            },
+            "docker": {
+                "running_containers": row.docker_running,
+                "containers": json.loads(row.docker_containers or "[]"),
+            },
+            "services": json.loads(row.services or "[]"),
+        }
+
+
+def _wa_compute_uptime(server_id: str) -> Optional[str]:
+    with Session(engine) as sess:
+        first = (
+            sess.execute(
+                select(Metric)
+                .where(Metric.server_id == server_id)
+                .order_by(Metric.id.asc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        last = (
+            sess.execute(
+                select(Metric)
+                .where(Metric.server_id == server_id)
+                .order_by(Metric.id.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if not first or not last:
+            return None
+        delta = (last.ts - first.ts).total_seconds()
+    if delta <= 0:
+        return None
+    days = int(delta // 86400)
+    hours = int((delta % 86400) // 3600)
+    minutes = int((delta % 3600) // 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _wa_build_alerts_summary(server_id: str, metrics: Dict[str, Any]) -> List[str]:
+    alerts: List[str] = []
+    with Session(engine) as sess:
+        cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+        thr = sess.execute(
+            select(ServerThreshold).where(ServerThreshold.server_id == server_id)
+        ).scalar_one_or_none()
+        if not cfg:
+            return []
+        cpu_thr = thr.cpu_threshold if thr and thr.cpu_threshold is not None else cfg.cpu_total_percent
+        mem_thr = (
+            thr.memory_threshold
+            if thr and thr.memory_threshold is not None
+            else cfg.memory_used_percent
+        )
+        disk_thr = (
+            thr.disk_threshold
+            if thr and thr.disk_threshold is not None
+            else cfg.disk_used_percent
+        )
+    cpu_val = (metrics.get("cpu") or {}).get("total") or 0
+    mem = metrics.get("memory") or {}
+    mem_total = mem.get("total") or 0
+    mem_used = mem.get("used") or 0
+    mem_pct = (mem_used / mem_total * 100.0) if mem_total else 0
+    disk = metrics.get("disk") or {}
+    disk_pct = disk.get("percent") or 0
+    if cpu_val >= cpu_thr:
+        alerts.append(f"CPU alta: {cpu_val:.1f}% (umbral {cpu_thr:.1f}%)")
+    if mem_pct >= mem_thr:
+        alerts.append(f"Memoria alta: {mem_pct:.1f}% (umbral {mem_thr:.1f}%)")
+    if disk_pct >= disk_thr:
+        alerts.append(f"Disco alto: {disk_pct:.1f}% (umbral {disk_thr:.1f}%)")
+    return alerts
+
+
+def _wa_show_server_metrics(sess: WhatsAppSessionData, server_id: str) -> List[str]:
+    metrics = _wa_get_latest_metrics(server_id)
+    if not metrics:
+        return [
+            f"No hay métricas recientes para el servidor {server_id}.",
+            "Asegúrate de que el agente esté reportando correctamente.",
+            "Envía 0 para volver al menú principal.",
+        ]
+    cpu = metrics.get("cpu") or {}
+    disk = metrics.get("disk") or {}
+    mem = metrics.get("memory") or {}
+    services = metrics.get("services") or []
+    cpu_val = cpu.get("total") or 0
+    cpu_bar = _wa_format_cpu_bar(cpu_val)
+    mem_total = mem.get("total") or 0
+    mem_used = mem.get("used") or 0
+    mem_free = mem.get("free") or 0
+    disk_total = disk.get("total") or 0
+    disk_used = disk.get("used") or 0
+    disk_free = disk.get("free") or 0
+    disk_pct = disk.get("percent") or 0
+    uptime = _wa_compute_uptime(server_id)
+    problematic_services = [s for s in services if s.get("status") != "running"]
+    svc_lines: List[str] = []
+    if problematic_services:
+        for s in problematic_services[:5]:
+            name = s.get("display_name") or s.get("name")
+            status = s.get("status")
+            svc_lines.append(f"- {name}: {status}")
+        if len(problematic_services) > 5:
+            svc_lines.append(f"... y {len(problematic_services) - 5} servicios más con problemas.")
+    else:
+        svc_lines.append("Todos los servicios reportan estado 'running'.")
+    alerts = _wa_build_alerts_summary(server_id, metrics)
+    alert_lines: List[str] = []
+    if alerts:
+        alert_lines.append("⚠️ Alertas activas:")
+        alert_lines.extend(f"- {a}" for a in alerts)
+    else:
+        alert_lines.append("✅ Sin alertas activas según umbrales configurados.")
+    ts = metrics.get("ts")
+    lines: List[str] = []
+    lines.append(f"📊 Estado de {server_id}")
+    if ts:
+        lines.append(f"Última muestra: {ts}")
+    lines.append("")
+    lines.append(f"CPU: {cpu_val:.1f}%")
+    lines.append(cpu_bar)
+    lines.append("")
+    lines.append(
+        f"Memoria: {mem_used:.1f}/{mem_total:.1f} MB (libre {mem_free:.1f} MB)"
+    )
+    lines.append(
+        f"Disco: {disk_used:.1f}/{disk_total:.1f} GB usados ({disk_pct:.1f}%)"
+    )
+    if uptime:
+        lines.append(f"Tiempo de actividad estimado: {uptime}")
+    lines.append("")
+    lines.append("Servicios críticos:")
+    lines.extend(svc_lines)
+    lines.append("")
+    lines.extend(alert_lines)
+    lines.append("")
+    lines.append("Opciones:")
+    lines.append("1. Refrescar métricas")
+    lines.append("0. Volver al menú principal")
+    with Session(engine) as db:
+        try:
+            db.add(
+                AuditLog(
+                    action="whatsapp_view_metrics",
+                    target_type="server",
+                    target_id=server_id,
+                    changes=json.dumps({"wa_id": sess.get("wa_id")}),
+                    user_email=sess.get("user_email"),
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+    return lines
+
+
+def _wa_build_main_menu(sess: WhatsAppSessionData) -> List[str]:
+    user_id = sess.get("user_id")
+    if not user_id:
+        sess["state"] = WhatsAppSessionState.INICIO
+        return [
+            "No encuentro una sesión activa ahora mismo.",
+            "Envía tu correo de acceso para iniciar de nuevo.",
+        ]
+    servers = _wa_list_servers_for_user(int(user_id))
+    pinned = [s for s in servers if s["server_id"] in _wa_favorite_server_ids]
+    others = [s for s in servers if s["server_id"] not in _wa_favorite_server_ids]
+    ordered = pinned + others
+    limited = False
+    visible_servers = ordered
+    if WHATSAPP_FREE_MAX_SERVERS and len(ordered) > WHATSAPP_FREE_MAX_SERVERS:
+        visible_servers = ordered[:WHATSAPP_FREE_MAX_SERVERS]
+        limited = True
+    sess["servers_menu"] = visible_servers
+    lines: List[str] = []
+    lines.append("📋 Estos son los servidores disponibles para tu usuario:")
+    if not visible_servers:
+        lines.append("(No tienes servidores asignados todavía.)")
+    else:
+        for idx, srv in enumerate(visible_servers, start=1):
+            label = srv["server_id"]
+            if srv["server_id"] in _wa_favorite_server_ids:
+                label = f"⭐ {label}"
+            if srv.get("group_name"):
+                label = f"{label} ({srv['group_name']})"
+            lines.append(f"{idx}. {label}")
+    lines.append("")
+    lines.append("Responde con el número del servidor para ver sus métricas.")
+    lines.append("Escribe 0 para refrescar este menú.")
+    lines.append("Escribe CAMBIAR USUARIO para iniciar sesión con otra cuenta.")
+    if limited:
+        lines.append("")
+        lines.append(
+            f"Versión gratuita: se muestran solo los primeros {WHATSAPP_FREE_MAX_SERVERS} servidores."
+        )
+        lines.append("Para ver el resto, entra al panel web o consulta la versión completa.")
+    with Session(engine) as db:
+        try:
+            db.add(
+                AuditLog(
+                    action="whatsapp_menu",
+                    target_type="whatsapp",
+                    target_id=sess.get("wa_id"),
+                    changes=json.dumps(
+                        {"servers": [s.get("server_id") for s in servers]}
+                    ),
+                    user_email=sess.get("user_email"),
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+    return lines
+
+
+def handle_whatsapp_conversation(wa_id: str, text: str) -> List[str]:
+    raw = (text or "").strip()
+    if not raw:
+        return [
+            "No he recibido ningún texto.",
+            "Envía un saludo (por ejemplo, hola) o una opción del menú.",
+        ]
+    upper = raw.upper()
+    if upper == "CAMBIAR USUARIO":
+        sess = _wa_get_session(wa_id)
+        with Session(engine) as db:
+            try:
+                db.add(
+                    AuditLog(
+                        action="whatsapp_logout",
+                        target_type="user",
+                        target_id=str(sess.get("user_id")),
+                        changes=json.dumps({"wa_id": wa_id}),
+                        user_email=sess.get("user_email"),
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        _wa_reset_session(wa_id)
+        return [
+            "Has cerrado sesión.",
+            "Envía tu correo de acceso para iniciar sesión con otro usuario.",
+        ]
+    sess = _wa_get_session(wa_id)
+    state = sess.get("state", WhatsAppSessionState.INICIO)
+    norm = _norm(raw)
+    greeting_triggers = {
+        "hola",
+        "hi",
+        "hello",
+        "buenas",
+        "buenos dias",
+        "buenas tardes",
+        "buenas noches",
+    }
+    if norm in greeting_triggers:
+        if not sess.get("user_id"):
+            sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+            return [
+                "👋 Hola, bienvenido al monitoreo de servidores de Wingsoft.",
+                "Te ayudo a revisar el estado de tus servidores desde aquí.",
+                "Para empezar, envía el correo que usas en el monitor (ej: usuario@empresa.com).",
+                "En cualquier momento puedes escribir CAMBIAR USUARIO para entrar con otra cuenta.",
+            ]
+        sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+        return _wa_build_main_menu(sess)
+    if state == WhatsAppSessionState.INICIO:
+        sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+        return [
+            "👋 Hola, bienvenido al monitoreo de servidores de Wingsoft.",
+            "Te ayudo a revisar el estado de tus servidores desde aquí.",
+            "Para empezar, envía el correo que usas en el monitor (ej: usuario@empresa.com).",
+            "En cualquier momento puedes escribir CAMBIAR USUARIO para entrar con otra cuenta.",
+        ]
+    if state == WhatsAppSessionState.PIDIENDO_EMAIL:
+        sess["pending_email"] = raw
+        sess["state"] = WhatsAppSessionState.PIDIENDO_PASSWORD
+        return [
+            f"✅ Correo recibido: {raw}",
+            "🔒 Ahora envía tu contraseña de acceso al monitor.",
+            "Solo tú ves estos datos; si te equivocas podrás intentarlo de nuevo.",
+        ]
+    if state == WhatsAppSessionState.PIDIENDO_PASSWORD:
+        email = sess.get("pending_email")
+        if not email:
+            sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+            return [
+                "No tengo registrado tu correo.",
+                "Por favor envía primero tu correo de acceso.",
+            ]
+        try:
+            login_data = perform_login(email, raw)
+        except HTTPException:
+            return [
+                "❌ Credenciales inválidas.",
+                "Revisa tu correo y contraseña e inténtalo nuevamente.",
+                "Envía de nuevo tu contraseña o escribe CAMBIAR USUARIO para usar otra cuenta.",
+            ]
+        sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+        sess["user_email"] = login_data["email"]
+        sess["user_name"] = login_data["name"]
+        sess["dashboard_token"] = login_data["token"]
+        sess["user_id"] = login_data["user_id"]
+        with Session(engine) as db:
+            try:
+                db.add(
+                    AuditLog(
+                        action="whatsapp_login",
+                        target_type="user",
+                        target_id=str(login_data["user_id"]),
+                        changes=json.dumps({"wa_id": wa_id}),
+                        user_email=login_data["email"],
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        return _wa_build_main_menu(sess)
+    if state == WhatsAppSessionState.MENU_PRINCIPAL:
+        if raw == "0":
+            return _wa_build_main_menu(sess)
+        if raw.isdigit():
+            idx = int(raw)
+            servers = sess.get("servers_menu") or []
+            if 1 <= idx <= len(servers):
+                srv = servers[idx - 1]
+                sess["state"] = WhatsAppSessionState.VIENDO_SERVIDOR
+                sess["selected_server_id"] = srv["server_id"]
+                return _wa_show_server_metrics(sess, srv["server_id"])
+            return [
+                "No reconozco esa opción.",
+                "Envía un número de la lista o 0 para refrescar el menú.",
+            ]
+        return [
+            "No he podido entender esa opción.",
+            "Envía un número de servidor, 0 para menú o CAMBIAR USUARIO.",
+        ]
+    if state == WhatsAppSessionState.VIENDO_SERVIDOR:
+        if raw == "0":
+            sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+            return _wa_build_main_menu(sess)
+        if raw == "1":
+            server_id = sess.get("selected_server_id")
+            if not server_id:
+                sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+                return _wa_build_main_menu(sess)
+            return _wa_show_server_metrics(sess, server_id)
+        return [
+            "Opciones:",
+            "1. Refrescar métricas del servidor actual",
+            "0. Volver al menú principal",
+        ]
+    sess["state"] = WhatsAppSessionState.INICIO
+    return [
+        "Estado interno inválido, reiniciando conversación.",
+        "Envía tu correo de acceso para comenzar.",
+    ]
+
+
+@app.get("/api/whatsapp/webhook")
+def whatsapp_verify(
+    mode: Optional[str] = Query(None, alias="hub.mode"),
+    token: Optional[str] = Query(None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN and challenge:
+        return Response(content=challenge, media_type="text/plain")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    try:
+        entries = body.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", []) or []
+                for msg in messages:
+                    from_id = msg.get("from")
+                    if not from_id:
+                        continue
+                    msg_type = msg.get("type")
+                    text = None
+                    if msg_type == "text":
+                        text = (msg.get("text") or {}).get("body")
+                    elif msg_type == "button":
+                        text = (msg.get("button") or {}).get("text")
+                    if text is None:
+                        continue
+                    replies = handle_whatsapp_conversation(from_id, text)
+                    if replies:
+                        _wa_send_messages(from_id, replies)
+        return {"status": "ok"}
+    except Exception:
+        logger.exception("Error processing WhatsApp webhook")
+        raise HTTPException(status_code=500, detail="Error processing webhook")
+
+
+@app.post("/api/twilio/whatsapp/webhook")
+async def twilio_whatsapp_webhook(request: Request):
+    try:
+        form = await request.form()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid form payload")
+    from_number = form.get("From") or ""
+    body = form.get("Body") or ""
+    wa_id = from_number.replace("whatsapp:", "") if from_number else "unknown"
+    replies = handle_whatsapp_conversation(wa_id, body)
+    text = "\n".join(replies) if replies else "No hay respuesta disponible."
+    escaped = html.escape(text)
+    twiml = f"<Response><Message>{escaped}</Message></Response>"
+    return Response(content=twiml, media_type="application/xml")
+
 
 # --- Rate Limiting Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -363,54 +966,46 @@ def require_data_monitoring_access(user: dict = Depends(get_current_user_from_to
             )
     return user
 
-@app.post("/api/login")
-@limiter.limit("5/minute")
-def login(request: Request, payload: LoginSchema):
-    identifier = _norm(payload.email or "")
-    password = (payload.password or "").strip()
-    
+
+def perform_login(identifier: str, password: str) -> Dict[str, Any]:
+    identifier = _norm(identifier or "")
+    password = (password or "").strip()
     with Session(engine) as sess:
-        # Buscar usuario por email
-        # Primero intentamos coincidencia exacta
         user = sess.execute(select(User).where(User.email == identifier)).scalar_one_or_none()
-        
-        # Si no, buscar si el identificador coincide con la parte local del correo
         if not user:
-             # Esto es menos eficiente pero permite login corto. 
-             # Idealmente el cliente debería enviar el email completo.
-             all_users = sess.execute(select(User)).scalars().all()
-             for u in all_users:
-                 if _norm(u.email) == identifier or _norm(u.email.split('@')[0]) == identifier:
-                     user = u
-                     break
-        
+            all_users = sess.execute(select(User)).scalars().all()
+            for u in all_users:
+                if _norm(u.email) == identifier or _norm(u.email.split('@')[0]) == identifier:
+                    user = u
+                    break
         if not user or not verify_password(password, user.password_hash):
             raise HTTPException(status_code=401, detail="Credenciales inválidas")
-        
         token = uuid.uuid4().hex
-        
-        # Guardar sesión en DB
         new_session = UserSession(token=token, user_id=user.id)
         sess.add(new_session)
         cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user.id)).scalar_one_or_none()
         can_view_dm = cfg.enabled if cfg else False
         sess.commit()
-        
         sidebar_conf = None
         if user.sidebar_config:
             try:
                 sidebar_conf = json.loads(user.sidebar_config)
             except:
                 pass
-
         return {
-            "token": token, 
-            "email": user.email, 
-            "name": user.name, 
+            "token": token,
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
             "is_admin": user.is_admin,
             "can_view_data_monitoring": can_view_dm,
-            "sidebar_config": sidebar_conf
+            "sidebar_config": sidebar_conf,
         }
+
+@app.post("/api/login")
+@limiter.limit("5/minute")
+def login(request: Request, payload: LoginSchema):
+    return perform_login(payload.email or "", payload.password or "")
 
 @app.post("/api/logout")
 def logout(x_dashboard_token: Optional[str] = Header(None)):

@@ -139,16 +139,28 @@ function ThresholdModal({ serverId, onClose }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetchJSON(`/api/umbrales/${serverId}`).then(setConfig).catch(console.error);
+    fetchJSON(`/api/umbrales/${serverId}`)
+      .then((t) => {
+        setConfig({
+          cpu: t.cpu_threshold ?? 80,
+          ram: t.memory_threshold ?? 80,
+          disk: t.disk_threshold ?? 80,
+        });
+      })
+      .catch(console.error);
   }, [serverId]);
 
   const handleSave = async () => {
     try {
       setLoading(true);
       await fetchJSON(`/api/umbrales/${serverId}`, { 
-        method: 'POST', 
+        method: 'PUT', 
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(config)
+        body: JSON.stringify({
+          cpu_threshold: config.cpu,
+          memory_threshold: config.ram,
+          disk_threshold: config.disk,
+        })
       });
       onClose();
     } catch (e) { alert(e.message); }
