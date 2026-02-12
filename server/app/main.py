@@ -43,6 +43,9 @@ from .config import (
     WHATSAPP_SESSION_TTL_MINUTES,
     WHATSAPP_FREE_MAX_SERVERS,
     WHATSAPP_FAVORITE_SERVERS,
+    OFFLINE_CHECK_INTERVAL,
+    OFFLINE_MULTIPLIER,
+    OFFLINE_MIN_SECONDS,
 )
 from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand
 from .schemas import (
@@ -88,6 +91,7 @@ class WhatsAppSessionState:
     PIDIENDO_PASSWORD = "pidiendo_password"
     MENU_PRINCIPAL = "menu_principal"
     VIENDO_SERVIDOR = "viendo_servidor"
+    PIDIENDO_OPCION_MENU = "pidiendo_opcion_menu"
 
 
 class WhatsAppSessionData(dict):
@@ -98,6 +102,9 @@ _wa_sessions: Dict[str, WhatsAppSessionData] = {}
 _wa_favorite_server_ids = {
     s.strip() for s in (WHATSAPP_FAVORITE_SERVERS or "").split(",") if s.strip()
 }
+_offline_threshold_seconds = max(
+    OFFLINE_MIN_SECONDS, int(OFFLINE_CHECK_INTERVAL * OFFLINE_MULTIPLIER)
+)
 
 
 def _wa_get_session(wa_id: str) -> WhatsAppSessionData:
@@ -175,6 +182,27 @@ def _wa_format_cpu_bar(percent: float) -> str:
     return "█" * filled + "░" * empty
 
 
+def _compute_server_status(sess: Session, server_id: str) -> Dict[str, Any]:
+    last = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if not last:
+        return {"status": "unknown", "last_seen": None}
+    now = datetime.utcnow()
+    if last.ts.tzinfo:
+        now = datetime.now(last.ts.tzinfo)
+    delta = (now - last.ts).total_seconds()
+    state = "online" if delta <= _offline_threshold_seconds else "offline"
+    return {"status": state, "last_seen": last.ts}
+
+
 def _wa_list_servers_for_user(user_id: int) -> List[Dict[str, Any]]:
     with Session(engine) as sess:
         configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
@@ -186,21 +214,27 @@ def _wa_list_servers_for_user(user_id: int) -> List[Dict[str, Any]]:
         if db_user and not db_user.is_admin:
             for link in db_user.server_links:
                 if link.server:
+                    status = _compute_server_status(sess, link.server.server_id)
                     results.append(
                         {
                             "server_id": link.server.server_id,
                             "group_name": link.server.group_name,
                             "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                            "status": status["status"],
+                            "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
                         }
                     )
         else:
             servers = sess.execute(select(Server)).scalars().all()
             for s in servers:
+                status = _compute_server_status(sess, s.server_id)
                 results.append(
                     {
                         "server_id": s.server_id,
                         "group_name": s.group_name,
                         "data_monitoring_enabled": cfg_map.get(s.server_id, False),
+                        "status": status["status"],
+                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
                     }
                 )
         return results
@@ -437,9 +471,15 @@ def _wa_build_main_menu(sess: WhatsAppSessionData) -> List[str]:
                 label = f"⭐ {label}"
             if srv.get("group_name"):
                 label = f"{label} ({srv['group_name']})"
+            state = srv.get("status") or "unknown"
+            if state == "online":
+                label = f"{label} [ON]"
+            elif state == "offline":
+                label = f"{label} [OFF]"
             lines.append(f"{idx}. {label}")
     lines.append("")
     lines.append("Responde con el número del servidor para ver sus métricas.")
+    lines.append("También puedes escribir ESTADO seguido del nombre exacto del servidor.")
     lines.append("Escribe 0 para refrescar este menú.")
     lines.append("Escribe CAMBIAR USUARIO para iniciar sesión con otra cuenta.")
     if limited:
@@ -572,6 +612,24 @@ def handle_whatsapp_conversation(wa_id: str, text: str) -> List[str]:
                 db.rollback()
         return _wa_build_main_menu(sess)
     if state == WhatsAppSessionState.MENU_PRINCIPAL:
+        if upper.startswith("ESTADO "):
+            target = raw[len("ESTADO "):].strip()
+            if not target:
+                return [
+                    "Para consultar el estado envía por ejemplo:",
+                    "ESTADO servidor-1",
+                ]
+            servers = sess.get("servers_menu") or []
+            match = next((s for s in servers if s.get("server_id") == target), None)
+            if not match:
+                return [
+                    f"No encuentro el servidor '{target}' en tu menú actual.",
+                    "Asegúrate de escribir el ID exactamente como aparece en la lista.",
+                    "También puedes elegirlo por número del listado.",
+                ]
+            sess["state"] = WhatsAppSessionState.VIENDO_SERVIDOR
+            sess["selected_server_id"] = match["server_id"]
+            return _wa_show_server_metrics(sess, match["server_id"])
         if raw == "0":
             return _wa_build_main_menu(sess)
         if raw.isdigit():
@@ -657,8 +715,10 @@ async def whatsapp_webhook(request: Request):
         raise HTTPException(status_code=500, detail="Error processing webhook")
 
 
-@app.post("/api/twilio/whatsapp/webhook")
+@app.api_route("/api/twilio/whatsapp/webhook", methods=["GET", "POST"])
 async def twilio_whatsapp_webhook(request: Request):
+    if request.method == "GET":
+        return Response(content="<Response></Response>", media_type="application/xml")
     try:
         form = await request.form()
     except Exception:
@@ -670,7 +730,7 @@ async def twilio_whatsapp_webhook(request: Request):
     text = "\n".join(replies) if replies else "No hay respuesta disponible."
     escaped = html.escape(text)
     twiml = f"<Response><Message>{escaped}</Message></Response>"
-    return Response(content=twiml, media_type="application/xml")
+    return Response(content=twiml, media_type="text/xml")
 
 
 # --- Rate Limiting Setup ---
@@ -1240,25 +1300,31 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
             # User sees only assigned servers
             for link in db_user.server_links:
                 if link.server:
+                    status = _compute_server_status(sess, link.server.server_id)
                     results.append({
                         "server_id": link.server.server_id,
                         "created_at": str(link.server.created_at),
                         "group_name": link.server.group_name,
                         "report_interval": link.server.report_interval,
                         "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
-                        "postman_access_level": link.postman_access_level
+                        "postman_access_level": link.postman_access_level,
+                        "status": status["status"],
+                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None
                     })
         else:
             # Admin sees all servers
             servers = sess.execute(select(Server)).scalars().all()
             for s in servers:
+                status = _compute_server_status(sess, s.server_id)
                 results.append({
                     "server_id": s.server_id,
                     "created_at": str(s.created_at),
                     "group_name": s.group_name,
                     "report_interval": s.report_interval,
                     "data_monitoring_enabled": cfg_map.get(s.server_id, False),
-                    "postman_access_level": "admin"
+                    "postman_access_level": "admin",
+                    "status": status["status"],
+                    "last_seen": str(status["last_seen"]) if status["last_seen"] else None
                 })
                 
         return results
@@ -1782,7 +1848,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 "cpu": payload.cpu.model_dump(),
                 "disk": payload.disk.model_dump(),
                 "docker": payload.docker.model_dump(),
-                "services": [s.model_dump() for s in payload.services] if payload.services else []
+                "services": [s.model_dump() for s in payload.services] if payload.services else [],
+                "network": payload.network.model_dump() if getattr(payload, "network", None) else None,
             }
             buf = _cache.get(payload.server_id)
             if not buf:

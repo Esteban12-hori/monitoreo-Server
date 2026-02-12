@@ -33,6 +33,12 @@ class DockerSchema(BaseModel):
     containers: List[DockerContainerSchema] = []
 
 
+class NetworkSchema(BaseModel):
+    bytes_sent: float
+    bytes_recv: float
+    packets_sent: Optional[float] = None
+    packets_recv: Optional[float] = None
+
 class ServiceSchema(BaseModel):
     name: str
     display_name: Optional[str] = ""
@@ -75,6 +81,7 @@ class MetricsIngestSchema(BaseModel):
     disk: DiskSchema
     docker: DockerSchema
     services: Optional[List[ServiceSchema]] = []
+    network: Optional[NetworkSchema] = None
     timestamp: Optional[str] = None
 
 

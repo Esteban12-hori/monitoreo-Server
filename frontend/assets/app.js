@@ -825,12 +825,13 @@ function ServerGroupManager() {
               React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid var(--border)' } },
                 React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
                 React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
+                React.createElement('th', { style: { padding: 8 } }, 'Conectividad'),
                 React.createElement('th', { style: { padding: 8 } }, 'Estado')
               )
             ),
             React.createElement('tbody', null,
               servers.length === 0
-                ? React.createElement('tr', null, React.createElement('td', { colSpan: 3, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 4, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
                 : servers.map(s =>
                     React.createElement('tr', { key: s.server_id, style: { borderBottom: '1px solid var(--border)' } },
                       React.createElement('td', { style: { padding: 8 } }, s.server_id),
@@ -843,6 +844,9 @@ function ServerGroupManager() {
                           React.createElement('option', { value: '' }, 'Sin grupo'),
                           groups.map(g => React.createElement('option', { key: g.id, value: g.name }, g.name))
                         )
+                      ),
+                      React.createElement('td', { style: { padding: 8, fontSize: '0.8rem' } },
+                        s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos'
                       ),
                       React.createElement('td', { style: { padding: 8, fontSize: '0.8rem', color: 'var(--text-muted)' } },
                         savingServer === s.server_id ? 'Guardando...' : 'Listo'
@@ -1327,6 +1331,9 @@ function App() {
                                 React.createElement('span', { style: { fontSize: '1.5rem' } }, '🖥️')
                             ),
                             React.createElement('div', { style: { color: 'var(--text-muted)', fontSize: '0.9rem' } }, s.group_name ? `Grupo: ${s.group_name}` : 'Sin Grupo'),
+                            React.createElement('div', { style: { marginTop: 8, fontSize: '0.8rem' } }, 
+                              s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos'
+                            ),
                             React.createElement('div', { style: { marginTop: 15, fontSize: '0.85rem', color: 'var(--primary)' } }, 'Ver Métricas →')
                         )
                     )
@@ -1334,7 +1341,14 @@ function App() {
         );
     }
 
-    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0} };
+    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0}, network:{bytes_sent:0,bytes_recv:0} };
+    const selectedServer = servers.find(s => s.server_id === selected) || {};
+    const isOnline = selectedServer.status === 'online';
+    const statusLabel = selectedServer.status === 'offline' ? 'Offline' : (selectedServer.status === 'online' ? 'Online' : 'Sin datos');
+    const statusBg = isOnline ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)';
+    const statusColor = isOnline ? '#10b981' : '#ef4444';
+    const sentGb = latest.network && latest.network.bytes_sent ? (latest.network.bytes_sent / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
+    const recvGb = latest.network && latest.network.bytes_recv ? (latest.network.bytes_recv / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
     const cpuData = history.map(h => h.cpu.total);
     const memData = history.map(h => Math.round((h.memory.used / h.memory.total) * 100));
     
@@ -1347,7 +1361,7 @@ function App() {
                 React.createElement('span', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, selected),
                 React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.find(s=>s.server_id===selected)?.group_name || '')
             ),
-            React.createElement('span', { className: 'badge', style: { background: 'var(--bg-element)', padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem', marginLeft: 10 } }, 'Conectado'),
+            React.createElement('span', { className: 'badge', style: { background: statusBg, padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem', marginLeft: 10, color: statusColor } }, statusLabel),
             React.createElement('div', { style: { marginLeft: 'auto' } },
                 React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
             )
@@ -1356,7 +1370,8 @@ function App() {
         React.createElement('div', { className: 'grid-3' },
             React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Carga del sistema' }),
             React.createElement(MetricCard, { title: 'Memoria', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${(latest.memory.used/1024).toFixed(1)} / ${(latest.memory.total/1024).toFixed(1)} GB` }),
-            React.createElement(MetricCard, { title: 'Disco', value: `${Math.round(latest.disk.percent) || 0}%`, subtitle: `${latest.disk.used} / ${latest.disk.total} GB` })
+            React.createElement(MetricCard, { title: 'Disco', value: `${Math.round(latest.disk.percent) || 0}%`, subtitle: `${latest.disk.used} / ${latest.disk.total} GB` }),
+            React.createElement(MetricCard, { title: 'Red', value: `${sentGb}↑ / ${recvGb}↓ GB`, subtitle: 'Totales enviados / recibidos' })
         ),
 
         React.createElement('div', { className: 'grid-2' },

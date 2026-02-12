@@ -45,6 +45,23 @@ def read_disk():
     }
 
 
+def read_network():
+    try:
+        counters = psutil.net_io_counters(pernic=False)
+        return {
+            "bytes_sent": float(counters.bytes_sent),
+            "bytes_recv": float(counters.bytes_recv),
+            "packets_sent": float(getattr(counters, "packets_sent", 0.0)),
+            "packets_recv": float(getattr(counters, "packets_recv", 0.0)),
+        }
+    except Exception:
+        return {
+            "bytes_sent": 0.0,
+            "bytes_recv": 0.0,
+            "packets_sent": 0.0,
+            "packets_recv": 0.0,
+        }
+
 def read_docker():
     try:
         # 1. Obtener metadatos de contenedores (ID, Name, Image, Status)
@@ -169,6 +186,7 @@ def payload(server_id: str):
         "disk": read_disk(),
         "docker": read_docker(),
         "services": read_services(),
+        "network": read_network(),
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
