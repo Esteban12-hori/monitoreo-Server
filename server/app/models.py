@@ -10,6 +10,7 @@ class UserServerLink(Base):
     user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
     server_id = Column(Integer, ForeignKey('servers.id'), primary_key=True)
     receive_alerts = Column(Boolean, default=True) # Controla si recibe alertas de este servidor específico
+    postman_access_level = Column(String(20), default="none") # none, view, edit, admin
 
     # Relationships
     user = relationship("User", back_populates="server_links")
@@ -46,6 +47,7 @@ class AlertRule(Base):
     server_scope = Column(String(20), nullable=False) # 'global', 'server', 'group'
     target_id = Column(String(255), nullable=True) # server_id o group_name
     emails = Column(Text, nullable=False) # Lista de emails en JSON (e.g. ["a@b.com", "c@d.com"])
+    extra_emails = Column(Text, nullable=True) # Lista de emails extra (CC) en JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -70,6 +72,7 @@ class Metric(Base):
 
     docker_running = Column(Integer)
     docker_containers = Column(Text)  # JSON serializado
+    services = Column(Text) # JSON serializado
 
 
 class AlertConfig(Base):
@@ -90,8 +93,16 @@ class AlertRecipient(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class NotificationSettings(Base):
+    __tablename__ = "notification_settings"
+    id = Column(Integer, primary_key=True)
+    email_enabled = Column(Boolean, default=True)
+    admin_only = Column(Boolean, default=True)
+    offline_alerts_enabled = Column(Boolean, default=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-class User(Base):
+
+
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
@@ -99,6 +110,7 @@ class User(Base):
     name = Column(String(255), nullable=True)
     is_admin = Column(Boolean, default=False)
     receive_alerts = Column(Boolean, default=False) # Nuevo campo
+    sidebar_config = Column(Text, nullable=True) # JSON con configuración del sidebar
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relación Many-to-Many con Server
@@ -156,6 +168,18 @@ class AuditLog(Base):
     changes = Column(Text, nullable=True) # JSON details
     user_email = Column(String(255), nullable=True) # Who did it
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentCommand(Base):
+    __tablename__ = "agent_commands"
+    id = Column(Integer, primary_key=True)
+    server_id = Column(String(255), ForeignKey("servers.server_id"), nullable=False)
+    command = Column(String(255), nullable=False) # e.g., 'restart_service'
+    params = Column(Text, nullable=True) # JSON
+    status = Column(String(50), default="pending") # pending, executed, failed
+    result = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    executed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DataMonitoring(Base):

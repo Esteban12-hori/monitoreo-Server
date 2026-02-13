@@ -139,16 +139,28 @@ function ThresholdModal({ serverId, onClose }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetchJSON(`/api/umbrales/${serverId}`).then(setConfig).catch(console.error);
+    fetchJSON(`/api/umbrales/${serverId}`)
+      .then((t) => {
+        setConfig({
+          cpu: t.cpu_threshold ?? 80,
+          ram: t.memory_threshold ?? 80,
+          disk: t.disk_threshold ?? 80,
+        });
+      })
+      .catch(console.error);
   }, [serverId]);
 
   const handleSave = async () => {
     try {
       setLoading(true);
       await fetchJSON(`/api/umbrales/${serverId}`, { 
-        method: 'POST', 
+        method: 'PUT', 
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(config)
+        body: JSON.stringify({
+          cpu_threshold: config.cpu,
+          memory_threshold: config.ram,
+          disk_threshold: config.disk,
+        })
       });
       onClose();
     } catch (e) { alert(e.message); }
@@ -174,27 +186,402 @@ function ThresholdModal({ serverId, onClose }) {
   );
 }
 
+function ContainerMonitor({ containers }) {
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  
+  const filtered = (containers || []).filter(c => {
+      const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.image.toLowerCase().includes(search.toLowerCase());
+      const matchStatus = statusFilter === 'all' || c.status.toLowerCase().includes(statusFilter);
+      return matchSearch && matchStatus;
+  });
+  
+  return React.createElement('div', { className: 'card' },
+    React.createElement('div', { className: 'card-title' }, '🐳 Monitor de Contenedores'),
+    React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 15 } },
+        React.createElement('input', { 
+            placeholder: 'Buscar container...', 
+            value: search, 
+            onChange: e => setSearch(e.target.value), 
+            style: { flex: 1, padding: 8, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' } 
+        }),
+        React.createElement('select', { 
+            value: statusFilter, 
+            onChange: e => setStatusFilter(e.target.value),
+            style: { padding: 8, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' }
+        },
+            React.createElement('option', { value: 'all' }, 'Todos'),
+            React.createElement('option', { value: 'up' }, 'Activos'),
+            React.createElement('option', { value: 'exited' }, 'Detenidos')
+        )
+    ),
+    React.createElement('div', { style: { overflowX: 'auto' } },
+        React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+            React.createElement('thead', null,
+                React.createElement('tr', { style: { borderBottom: '1px solid var(--border)', textAlign: 'left' } },
+                    React.createElement('th', { style: { padding: 10 } }, 'Nombre'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Imagen'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Estado'),
+                    React.createElement('th', { style: { padding: 10 } }, 'CPU %'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Mem %')
+                )
+            ),
+            React.createElement('tbody', null,
+                filtered.length === 0 
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 5, style: { padding: 20, textAlign: 'center' } }, 'No hay contenedores'))
+                : filtered.map(c => 
+                    React.createElement('tr', { key: c.id || c.name, style: { borderBottom: '1px solid var(--border)' } },
+                        React.createElement('td', { style: { padding: 10, fontWeight: 500 } }, c.name),
+                        React.createElement('td', { style: { padding: 10, fontSize: '0.85rem', color: 'var(--text-muted)' } }, c.image || '-'),
+                        React.createElement('td', { style: { padding: 10 } }, 
+                             React.createElement('span', { className: 'badge', style: { 
+                                 background: c.status.toLowerCase().includes('up') ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                 color: c.status.toLowerCase().includes('up') ? '#10b981' : '#ef4444'
+                             } }, c.status)
+                        ),
+                        React.createElement('td', { style: { padding: 10 } }, c.cpu || 0),
+                        React.createElement('td', { style: { padding: 10 } }, c.mem || 0)
+                    )
+                )
+            )
+        )
+    )
+  );
+}
+
+function ServiceManager({ services, serverId }) {
+    const [search, setSearch] = useState('');
+    const [processing, setProcessing] = useState(null); // service_name being processed
+    const [selectedServices, setSelectedServices] = useState({});
+
+    const filtered = (services || []).filter(s => s.name.toLowerCase().includes(search.toLowerCase()) || (s.display_name && s.display_name.toLowerCase().includes(search.toLowerCase())));
+
+    const handleAction = async (serviceName, action) => {
+        if (!confirm(`¿Estás seguro de que quieres ${action} el servicio ${serviceName}?`)) return;
+        setProcessing(serviceName);
+        try {
+            await fetchJSON(`/api/servers/${serverId}/services/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ service: serviceName, action })
+            });
+            alert(`Comando ${action} enviado correctamente. El agente lo ejecutará en breve.`);
+        } catch (e) {
+            alert(`Error: ${e.message}`);
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const handleGroupAction = async (action) => {
+        const targets = Object.keys(selectedServices).filter(k => selectedServices[k]);
+        if (targets.length === 0) return alert("Selecciona al menos un servicio");
+        if (!confirm(`¿${action} ${targets.length} servicios seleccionados?`)) return;
+        
+        setProcessing('GROUP');
+        try {
+            await fetchJSON(`/api/servers/${serverId}/services/bulk-action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ services: targets, action })
+            });
+            alert("Acciones enviadas correctamente. El agente las ejecutará en breve.");
+            setSelectedServices({});
+        } catch (e) {
+            alert(`Error al enviar acciones masivas: ${e.message}`);
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const toggleSelect = (name) => setSelectedServices(p => ({...p, [name]: !p[name]}));
+    const toggleAll = () => {
+        if (Object.keys(selectedServices).length === filtered.length) setSelectedServices({});
+        else {
+            const all = {};
+            filtered.forEach(s => all[s.name] = true);
+            setSelectedServices(all);
+        }
+    };
+
+    return React.createElement('div', { className: 'card' },
+        React.createElement('div', { className: 'card-title' }, '⚙️ Gestión de Servicios'),
+        React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 15, flexWrap: 'wrap' } },
+             React.createElement('input', { 
+                placeholder: 'Buscar servicio...', 
+                value: search, 
+                onChange: e => setSearch(e.target.value), 
+                style: { padding: 8, flex: 1, minWidth: 200, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' } 
+            }),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('start'), disabled: processing }, 'Iniciar'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('stop'), disabled: processing }, 'Detener'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('restart'), disabled: processing }, 'Reiniciar'),
+            React.createElement('button', { className: 'secondary', onClick: () => handleGroupAction('update'), disabled: processing }, 'Actualizar')
+        ),
+        React.createElement('div', { style: { overflowX: 'auto', maxHeight: 400, overflowY: 'auto' } },
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+                React.createElement('thead', null,
+                    React.createElement('tr', { style: { borderBottom: '1px solid var(--border)', textAlign: 'left' } },
+                        React.createElement('th', { style: { padding: 10, width: 30 } }, 
+                            React.createElement('input', { type: 'checkbox', checked: filtered.length > 0 && Object.keys(selectedServices).length === filtered.length, onChange: toggleAll })
+                        ),
+                        React.createElement('th', { style: { padding: 10 } }, 'Nombre'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Display Name'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Versión'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Dependencias'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Estado'),
+                        React.createElement('th', { style: { padding: 10 } }, 'Acciones')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    filtered.length === 0 
+                    ? React.createElement('tr', null, React.createElement('td', { colSpan: 6, style: { padding: 20, textAlign: 'center' } }, 'No hay servicios'))
+                    : filtered.map(s => 
+                        React.createElement('tr', { key: s.name, style: { borderBottom: '1px solid var(--border)', background: selectedServices[s.name] ? 'rgba(var(--primary-rgb), 0.1)' : 'transparent' } },
+                            React.createElement('td', { style: { padding: 10 } }, 
+                                React.createElement('input', { type: 'checkbox', checked: !!selectedServices[s.name], onChange: () => toggleSelect(s.name) })
+                            ),
+                            React.createElement('td', { style: { padding: 10 } }, s.name),
+                            React.createElement('td', { style: { padding: 10 } }, s.display_name),
+                            React.createElement('td', { style: { padding: 10, fontSize: '0.8rem', color: 'var(--text-muted)' } }, s.version || '-'),
+                            React.createElement('td', { style: { padding: 10, fontSize: '0.8rem', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, 
+                                (s.dependencies || []).join(', ') || '-'
+                            ),
+                            React.createElement('td', { style: { padding: 10 } }, 
+                                React.createElement('span', { className: 'badge', style: { background: s.status === 'running' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)', color: s.status === 'running' ? '#10b981' : '#ef4444' } }, s.status)
+                            ),
+                            React.createElement('td', { style: { padding: 10, display: 'flex', gap: 5 } },
+                                processing === s.name 
+                                ? React.createElement('span', { style: { fontSize: '0.8rem' } }, 'Procesando...')
+                                : React.createElement(React.Fragment, null,
+                                    s.status !== 'running' && React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'start') }, 'Iniciar'),
+                                    s.status === 'running' && React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'stop') }, 'Detener'),
+                                    React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'restart') }, 'Reiniciar'),
+                                    React.createElement('button', { className: 'secondary', style: { fontSize: '0.7rem', padding: '2px 6px' }, onClick: () => handleAction(s.name, 'update') }, 'Actualizar')
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    );
+}
+
+function SidebarSettingsModal({ config, setConfig, onClose }) {
+    const [activeTab, setActiveTab] = useState('sections');
+    const [sectionsExpanded, setSectionsExpanded] = useState(true);
+    const [saveState, setSaveState] = useState('idle');
+    const [error, setError] = useState('');
+    const overlayRef = useRef(null);
+
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [onClose]);
+
+    useEffect(() => {
+        if (saveState === 'saved') {
+            const t = setTimeout(() => setSaveState('idle'), 1500);
+            return () => clearTimeout(t);
+        }
+    }, [saveState]);
+
+    const update = (newSections) => {
+        const newConfig = { ...config, sections: newSections };
+        setConfig(newConfig);
+        setSaveState('saving');
+        setTimeout(() => setSaveState('saved'), 400);
+    };
+
+    const toggle = (index) => {
+        const newSections = [...config.sections];
+        newSections[index].visible = !newSections[index].visible;
+        const visibleCount = newSections.filter(s => s.visible).length;
+        if (visibleCount === 0) {
+            setError('Debe haber al menos una sección visible');
+            return;
+        }
+        setError('');
+        update(newSections);
+    };
+
+    const move = (index, direction) => {
+        const newSections = [...config.sections];
+        if (direction === -1 && index > 0) {
+            [newSections[index], newSections[index - 1]] = [newSections[index - 1], newSections[index]];
+        } else if (direction === 1 && index < newSections.length - 1) {
+            [newSections[index], newSections[index + 1]] = [newSections[index + 1], newSections[index]];
+        }
+        update(newSections);
+    };
+
+    const handleOverlayClick = (e) => {
+        if (e.target === overlayRef.current) onClose();
+    };
+
+    const visibleCount = (config.sections || []).filter(s => s.visible).length;
+    const totalSections = (config.sections || []).length || 1;
+    const usagePercent = Math.round((visibleCount / totalSections) * 100);
+
+    const handleReset = () => {
+        const resetSections = (config.sections || []).map(s => ({ ...s, visible: true }));
+        setError('');
+        update(resetSections);
+    };
+
+    const general = config.general || {};
+
+    const updateGeneral = (patch) => {
+        const newConfig = { ...config, general: { ...general, ...patch } };
+        setConfig(newConfig);
+        setSaveState('saving');
+        setTimeout(() => setSaveState('saved'), 400);
+    };
+
+    return React.createElement('div', { className: 'modal-overlay', ref: overlayRef, onClick: handleOverlayClick },
+        React.createElement('div', { className: 'card', style: { width: 520, maxWidth: '80vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', fontSize: '14px' } },
+            React.createElement('button', { 
+                className: 'secondary', 
+                onClick: onClose, 
+                style: { position: 'absolute', top: 10, right: 10, padding: '2px 8px', fontSize: '0.75rem' } 
+            }, '✕'),
+            React.createElement('div', { style: { marginBottom: 16 } },
+                React.createElement('div', { className: 'card-title', style: { marginBottom: 4 } }, '🛠️ Configuración de Panel'),
+                React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)' } }, 'Elige qué secciones se muestran y el orden en el dashboard.')
+            ),
+            React.createElement('div', { style: { display: 'flex', gap: 8, marginBottom: 12 } },
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: () => setActiveTab('sections'),
+                    style: { padding: '4px 10px', fontSize: '0.8rem', borderColor: activeTab === 'sections' ? 'var(--primary)' : 'var(--border)', color: activeTab === 'sections' ? 'var(--primary)' : 'var(--text-main)' }
+                }, '🧩 Secciones'),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: () => setActiveTab('general'),
+                    style: { padding: '4px 10px', fontSize: '0.8rem', borderColor: activeTab === 'general' ? 'var(--primary)' : 'var(--border)', color: activeTab === 'general' ? 'var(--primary)' : 'var(--text-main)' }
+                }, '⚙️ General')
+            ),
+            React.createElement('div', { style: { marginBottom: 12 } },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 } },
+                    React.createElement('span', null, 'Uso del panel'),
+                    React.createElement('span', null, visibleCount + '/' + totalSections + ' secciones')
+                ),
+                React.createElement('div', { style: { height: 6, borderRadius: 999, background: 'var(--bg-body)', overflow: 'hidden' } },
+                    React.createElement('div', { style: { width: usagePercent + '%', height: '100%', background: 'var(--primary)' } })
+                )
+            ),
+            activeTab === 'sections' && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                React.createElement('div', { 
+                    style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', marginBottom: 4 }, 
+                    onClick: () => setSectionsExpanded(!sectionsExpanded)
+                },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                        React.createElement('span', null, '📋'),
+                        React.createElement('span', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Secciones del dashboard')
+                    ),
+                    React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, sectionsExpanded ? 'Contraer' : 'Expandir')
+                ),
+                sectionsExpanded && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+                config.sections.map((s, i) => 
+                    React.createElement('div', { 
+                        key: s.id, 
+                        style: { 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between', 
+                            padding: 10, 
+                            border: '1px solid var(--border)', 
+                            borderRadius: 8,
+                            background: s.visible ? 'rgba(56, 189, 248, 0.05)' : 'transparent'
+                        } 
+                    },
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                            React.createElement('input', { type: 'checkbox', checked: s.visible, onChange: () => toggle(i), style: { width: 'auto' } }),
+                            React.createElement('div', null,
+                                React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, s.label),
+                                React.createElement('div', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, i === 0 ? 'Sección principal' : `Posición ${i + 1}`)
+                            )
+                        ),
+                        React.createElement('div', { style: { display: 'flex', gap: 5 } },
+                            React.createElement('button', { className: 'secondary', disabled: i === 0, onClick: () => move(i, -1), style: { padding: '4px 8px', fontSize: '0.8rem' } }, '⬆ Arriba'),
+                            React.createElement('button', { className: 'secondary', disabled: i === config.sections.length - 1, onClick: () => move(i, 1), style: { padding: '4px 8px', fontSize: '0.8rem' } }, '⬇ Abajo')
+                        )
+                    )
+                )
+            ),
+                )
+            ),
+            activeTab === 'general' && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 } },
+                React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-element)', display: 'flex', flexDirection: 'column', gap: 4 } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                            React.createElement('span', null, '📌'),
+                            React.createElement('span', { style: { fontWeight: 500, fontSize: '0.9rem' } }, 'Resumen del panel')
+                        ),
+                        React.createElement('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, visibleCount + '/' + totalSections + ' secciones activas')
+                    ),
+                    React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Ajusta estos parámetros para adaptar el dashboard a tu forma de trabajar.')
+                ),
+                React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+                    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+                        React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Retracción automática del panel lateral'),
+                        React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Oculta el panel cuando no hay actividad para ganar espacio.')
+                    ),
+                    React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+                        React.createElement('input', {
+                            type: 'checkbox',
+                            checked: general.autoCollapseSidebar !== false,
+                            onChange: (e) => updateGeneral({ autoCollapseSidebar: e.target.checked }),
+                            style: { width: 'auto' }
+                        }),
+                        React.createElement('span', null, general.autoCollapseSidebar !== false ? 'Activado' : 'Desactivado')
+                    )
+                )
+            ),
+            error && React.createElement('div', { style: { marginTop: 10, fontSize: '0.8rem', color: 'var(--danger)' } }, error),
+            React.createElement('div', { style: { marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                    React.createElement('button', { className: 'secondary', style: { padding: '4px 8px', fontSize: '0.8rem' }, onClick: handleReset }, '⟳ Restablecer'),
+                    saveState === 'saving' && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Guardando...'),
+                    saveState === 'saved' && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--success)' } }, 'Guardado')
+                ),
+                React.createElement('button', { className: 'secondary', onClick: onClose }, 'Cerrar')
+            )
+        )
+    );
+}
+
 // --- ADMIN COMPONENTS ---
 
 function ServerAssignmentModal({ user, onClose }) {
     const [allServers, setAllServers] = useState([]);
     const [assignments, setAssignments] = useState({});
     const [loading, setLoading] = useState(true);
+    const [groups, setGroups] = useState([]);
+    const [selectedGroup, setSelectedGroup] = useState('');
 
     useEffect(() => {
         const load = async () => {
             try {
-                const [serversData, assignedData] = await Promise.all([
+                const [serversData, assignedData, groupsData] = await Promise.all([
                     fetchJSON('/api/servers'),
-                    fetchJSON(`/api/admin/users/${user.id}/servers`)
+                    fetchJSON(`/api/admin/users/${user.id}/servers`),
+                    fetchJSON('/api/admin/groups')
                 ]);
                 setAllServers(serversData);
+                setGroups(groupsData);
                 const map = {};
-                serversData.forEach(s => { map[s.server_id] = { assigned: false, alerts: true }; });
+                serversData.forEach(s => { map[s.server_id] = { assigned: false, alerts: true, postman: 'none' }; });
                 assignedData.forEach(a => {
                     if (map[a.server_id]) {
                         map[a.server_id].assigned = true;
                         map[a.server_id].alerts = a.receive_alerts;
+                        map[a.server_id].postman = a.postman_access_level || 'none';
                     }
                 });
                 setAssignments(map);
@@ -206,26 +593,93 @@ function ServerAssignmentModal({ user, onClose }) {
 
     const toggleAssigned = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], assigned: !p[sid].assigned}}));
     const toggleAlerts = (sid) => setAssignments(p => ({...p, [sid]: {...p[sid], alerts: !p[sid].alerts}}));
+    const setPostman = (sid, val) => setAssignments(p => ({...p, [sid]: {...p[sid], postman: val}}));
+
+    const bulkAssignGroupAdmin = () => {
+        if (!selectedGroup) return;
+        setAssignments(prev => {
+            const next = { ...prev };
+            allServers.forEach(s => {
+                if (s.group_name === selectedGroup) {
+                    const st = next[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    next[s.server_id] = { ...st, assigned: true, alerts: true, postman: 'admin' };
+                }
+            });
+            return next;
+        });
+    };
+
+    const bulkUnassignGroup = () => {
+        if (!selectedGroup) return;
+        setAssignments(prev => {
+            const next = { ...prev };
+            allServers.forEach(s => {
+                if (s.group_name === selectedGroup) {
+                    const st = next[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    next[s.server_id] = { ...st, assigned: false };
+                }
+            });
+            return next;
+        });
+    };
     
     const handleSave = async () => {
         try {
-            const payload = Object.entries(assignments).filter(([_, v]) => v.assigned).map(([sid, v]) => ({ server_id: sid, receive_alerts: v.alerts }));
+            const payload = Object.entries(assignments).filter(([_, v]) => v.assigned).map(([sid, v]) => ({ 
+                server_id: sid, 
+                receive_alerts: v.alerts,
+                postman_access_level: v.postman 
+            }));
             await fetchJSON(`/api/admin/users/${user.id}/servers`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ assignments: payload }) });
             onClose();
         } catch (e) { alert(e.message); }
     };
 
     return React.createElement('div', { className: 'modal-overlay' },
-        React.createElement('div', { className: 'card', style: { width: 600, maxHeight: '80vh', overflowY: 'auto' } },
+        React.createElement('div', { className: 'card', style: { width: 640, maxHeight: '80vh', overflowY: 'auto' } },
             React.createElement('div', { className: 'card-title', style: { marginBottom: 10 } }, `Asignar a ${user.name || user.email}`),
+            !loading && groups.length > 0 && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontSize: '0.85rem' } },
+                React.createElement('span', { style: { color: 'var(--text-muted)' } }, 'Admin de grupo:'),
+                React.createElement('select', { 
+                    value: selectedGroup, 
+                    onChange: e => setSelectedGroup(e.target.value),
+                    style: { fontSize: '0.8rem' }
+                },
+                    React.createElement('option', { value: '' }, 'Selecciona un grupo'),
+                    groups.map(g => React.createElement('option', { key: g.id, value: g.name }, g.name))
+                ),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: bulkAssignGroupAdmin, 
+                    disabled: !selectedGroup 
+                }, 'Asignar todos como Admin'),
+                React.createElement('button', { 
+                    className: 'secondary', 
+                    onClick: bulkUnassignGroup, 
+                    disabled: !selectedGroup 
+                }, 'Quitar del grupo')
+            ),
             loading ? 'Cargando...' : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
                 allServers.map(s => {
-                    const st = assignments[s.server_id] || { assigned: false, alerts: true };
+                    const st = assignments[s.server_id] || { assigned: false, alerts: true, postman: 'none' };
+                    const label = s.group_name ? `${s.server_id} (${s.group_name})` : s.server_id;
                     return React.createElement('div', { key: s.server_id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--border)', borderRadius: 6, background: st.assigned ? 'var(--bg-element)' : 'transparent' } },
                         React.createElement('input', { type: 'checkbox', checked: st.assigned, onChange: () => toggleAssigned(s.server_id), style: { width: 'auto' } }),
-                        React.createElement('span', { style: { flex: 1, fontWeight: 500 } }, s.server_id),
-                        st.assigned && React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' } },
-                            React.createElement('input', { type: 'checkbox', checked: st.alerts, onChange: () => toggleAlerts(s.server_id), style: { width: 'auto' } }), 'Alertas'
+                        React.createElement('span', { style: { flex: 1, fontWeight: 500 } }, label),
+                        st.assigned && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' } },
+                                React.createElement('input', { type: 'checkbox', checked: st.alerts, onChange: () => toggleAlerts(s.server_id), style: { width: 'auto' } }), 'Alertas'
+                            ),
+                            React.createElement('select', { 
+                                value: st.postman, 
+                                onChange: e => setPostman(s.server_id, e.target.value),
+                                style: { fontSize: '0.8rem', padding: '2px 4px' } 
+                            },
+                                React.createElement('option', { value: 'none' }, 'Sin Acceso Postman'),
+                                React.createElement('option', { value: 'view' }, 'Ver'),
+                                React.createElement('option', { value: 'edit' }, 'Editar'),
+                                React.createElement('option', { value: 'admin' }, 'Admin')
+                            )
                         )
                     );
                 })
@@ -274,15 +728,22 @@ function UserEditModal({ user, onClose, onSave }) {
 
 function ServerGroupManager() {
   const [groups, setGroups] = useState([]);
+  const [servers, setServers] = useState([]);
   const [newGroup, setNewGroup] = useState('');
+  const [savingServer, setSavingServer] = useState('');
 
-  const load = () => fetchJSON('/api/admin/groups').then(setGroups).catch(console.error);
+  const load = () => {
+    fetchJSON('/api/admin/groups').then(setGroups).catch(console.error);
+    fetchJSON('/api/servers').then(setServers).catch(console.error);
+  };
+
   useEffect(() => { load(); }, []);
 
   const createGroup = async () => {
-    if (!newGroup) return;
+    const name = newGroup.trim();
+    if (!name) return;
     try {
-      await fetchJSON('/api/admin/groups', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: newGroup }) });
+      await fetchJSON('/api/admin/groups', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
       setNewGroup('');
       load();
     } catch (e) { alert(e.message); }
@@ -296,17 +757,105 @@ function ServerGroupManager() {
     } catch (e) { alert(e.message); }
   };
 
+  const updateServerGroup = async (serverId, groupName) => {
+    try {
+      setSavingServer(serverId);
+      await fetchJSON(`/api/admin/servers/${encodeURIComponent(serverId)}/group`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ group_name: groupName || null })
+      });
+      setServers(prev => prev.map(s => s.server_id === serverId ? { ...s, group_name: groupName || null } : s));
+    } catch (e) { alert(e.message); }
+    finally {
+      setSavingServer('');
+    }
+  };
+
+  const groupCounts = {};
+  servers.forEach(s => {
+    const g = s.group_name || '';
+    groupCounts[g] = (groupCounts[g] || 0) + 1;
+  });
+  const ungroupedCount = groupCounts[''] || 0;
+
   return React.createElement('div', { className: 'card' },
-    React.createElement('div', { className: 'card-title' }, 'Grupos de Servidores'),
-    React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 20 } },
-      React.createElement('input', { placeholder: 'Nombre del grupo', value: newGroup, onChange: e => setNewGroup(e.target.value) }),
-      React.createElement('button', { onClick: createGroup }, 'Crear')
+    React.createElement('div', { className: 'card-header' },
+      React.createElement('div', { className: 'card-title' }, 'Grupos de Servidores'),
+      React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.length + ' servidores')
     ),
-    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-      groups.map(g => 
-        React.createElement('div', { key: g.id, style: { display: 'flex', justifyContent: 'space-between', padding: 10, border: '1px solid var(--border)', borderRadius: 6 } },
-          React.createElement('span', null, g.name),
-          React.createElement('button', { className: 'secondary', style: { padding: '2px 8px', fontSize: '0.8rem' }, onClick: () => deleteGroup(g.id) }, 'Eliminar')
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 260px) minmax(0, 1fr)', gap: 20, alignItems: 'flex-start' } },
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        React.createElement('div', { style: { display: 'flex', gap: 8 } },
+          React.createElement('input', { placeholder: 'Nombre del grupo', value: newGroup, onChange: e => setNewGroup(e.target.value) }),
+          React.createElement('button', { onClick: createGroup }, 'Crear')
+        ),
+        React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Organiza los servidores en grupos lógicos (por cliente, entorno, sucursal, etc.).'),
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 } },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4 } },
+            React.createElement('span', null, 'Grupos'),
+            React.createElement('span', null, 'Servidores')
+          ),
+          groups.length === 0 && React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Sin grupos creados'),
+          groups.map(g => 
+            React.createElement('div', { key: g.id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, borderRadius: 6, background: 'var(--bg-element)' } },
+              React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+                React.createElement('span', { style: { fontSize: '0.9rem', fontWeight: 500 } }, g.name),
+                React.createElement('span', { style: { fontSize: '0.75rem', color: 'var(--text-muted)' } }, (groupCounts[g.name] || 0) + ' servidores')
+              ),
+              React.createElement('button', { 
+                className: 'secondary', 
+                style: { padding: '2px 8px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }, 
+                onClick: () => deleteGroup(g.id),
+                disabled: (groupCounts[g.name] || 0) > 0
+              }, (groupCounts[g.name] || 0) > 0 ? 'En uso' : 'Eliminar')
+            )
+          ),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 } }, 'Sin grupo: ' + ungroupedCount)
+        )
+      ),
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Asignación de servidores a grupos'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Haz clic en el grupo para cambiarlo')
+        ),
+        React.createElement('div', { style: { overflowX: 'auto' } },
+          React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' } },
+            React.createElement('thead', null,
+              React.createElement('tr', { style: { textAlign: 'left', borderBottom: '1px solid var(--border)' } },
+                React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
+                React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
+                React.createElement('th', { style: { padding: 8 } }, 'Conectividad'),
+                React.createElement('th', { style: { padding: 8 } }, 'Estado')
+              )
+            ),
+            React.createElement('tbody', null,
+              servers.length === 0
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 4, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
+                : servers.map(s =>
+                    React.createElement('tr', { key: s.server_id, style: { borderBottom: '1px solid var(--border)' } },
+                      React.createElement('td', { style: { padding: 8 } }, s.server_id),
+                      React.createElement('td', { style: { padding: 8 } },
+                        React.createElement('select', {
+                          value: s.group_name || '',
+                          onChange: e => updateServerGroup(s.server_id, e.target.value),
+                          style: { fontSize: '0.8rem' }
+                        },
+                          React.createElement('option', { value: '' }, 'Sin grupo'),
+                          groups.map(g => React.createElement('option', { key: g.id, value: g.name }, g.name))
+                        )
+                      ),
+                      React.createElement('td', { style: { padding: 8, fontSize: '0.8rem' } },
+                        (s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos') +
+                        (s.status === 'online' && s.uptime ? ` · ${s.uptime}` : '')
+                      ),
+                      React.createElement('td', { style: { padding: 8, fontSize: '0.8rem', color: 'var(--text-muted)' } },
+                        savingServer === s.server_id ? 'Guardando...' : 'Listo'
+                      )
+                    )
+                  )
+            )
+          )
         )
       )
     )
@@ -315,7 +864,7 @@ function ServerGroupManager() {
 
 function AlertRulesManager() {
   const [rules, setRules] = useState([]);
-  const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '' });
+  const [newRule, setNewRule] = useState({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '', extra_emails: '' });
   const [loading, setLoading] = useState(false);
 
   const load = () => fetchJSON('/api/admin/alert-rules').then(setRules).catch(console.error);
@@ -336,7 +885,8 @@ function AlertRulesManager() {
         alert_type: newRule.alert_type,
         server_scope: newRule.server_scope,
         target_id: newRule.server_scope === 'global' ? null : newRule.target_id,
-        emails: [newRule.email]
+        emails: [newRule.email],
+        extra_emails: newRule.extra_emails ? JSON.stringify(newRule.extra_emails.split(',').map(e => e.trim()).filter(e => e)) : null
       };
 
       await fetchJSON('/api/admin/alert-rules', { 
@@ -344,7 +894,7 @@ function AlertRulesManager() {
         headers: {'Content-Type':'application/json'}, 
         body: JSON.stringify(payload) 
       });
-      setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '' });
+      setNewRule({ alert_type: 'cpu', server_scope: 'global', target_id: '', email: '', extra_emails: '' });
       load();
     } catch (e) { alert(e.message); }
     finally { setLoading(false); }
@@ -362,7 +912,7 @@ function AlertRulesManager() {
     React.createElement('div', { className: 'card-title' }, 'Reglas de Ruteo de Alertas'),
     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 20 } },
       React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}) },
-        ['cpu', 'memory', 'disk', 'offline'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
+        ['cpu', 'memory', 'disk', 'offline', 'service_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
       ),
       React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}) },
         React.createElement('option', { value: 'global' }, 'Global'),
@@ -375,6 +925,7 @@ function AlertRulesManager() {
         onChange: e => setNewRule({...newRule, target_id: e.target.value}) 
       }),
       React.createElement('input', { placeholder: 'Email destino', value: newRule.email, onChange: e => setNewRule({...newRule, email: e.target.value}) }),
+      React.createElement('input', { placeholder: 'CC (separar por comas)', value: newRule.extra_emails, onChange: e => setNewRule({...newRule, extra_emails: e.target.value}) }),
       React.createElement('button', { onClick: createRule, disabled: loading }, loading ? '...' : 'Añadir')
     ),
     React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
@@ -383,10 +934,110 @@ function AlertRulesManager() {
           React.createElement('div', null, 
             React.createElement('div', { style: { fontWeight: 'bold' } }, r.alert_type.toUpperCase()),
             React.createElement('div', { style: { fontSize: '0.85rem', color: 'var(--text-muted)' } }, 
-              `${r.server_scope.toUpperCase()} ${r.target_id ? `(${r.target_id})` : ''} -> ${r.emails && r.emails.join(', ')}`
+              `${r.server_scope.toUpperCase()} ${r.target_id ? `(${r.target_id})` : ''} -> ${r.emails && r.emails.join(', ')}${r.extra_emails ? ' + CC: ' + JSON.parse(r.extra_emails).join(', ') : ''}`
             )
           ),
           React.createElement('button', { className: 'secondary', style: { padding: '2px 8px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' }, onClick: () => deleteRule(r.id) }, 'Eliminar')
+        )
+      )
+    )
+  );
+}
+
+function NotificationSettingsPanel() {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    fetchJSON('/api/admin/notification-settings')
+      .then(setSettings)
+      .catch(e => alert(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const updateSetting = async (patch) => {
+    try {
+      setSaving(true);
+      const res = await fetchJSON('/api/admin/notification-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+      setSettings(res);
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !settings) {
+    return React.createElement('div', { className: 'card' }, 'Cargando configuración de notificaciones...');
+  }
+
+  const envLabel = settings.environment === 'production' ? 'Producción' : settings.environment === 'staging' ? 'Staging' : 'Desarrollo';
+
+  return React.createElement('div', { className: 'card' },
+    React.createElement('div', { className: 'card-header' },
+      React.createElement('div', { className: 'card-title' }, 'Notificaciones por Correo'),
+      saving && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Guardando...')
+    ),
+    React.createElement('div', { style: { marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+      React.createElement('div', { style: { fontSize: '0.9rem', color: 'var(--text-muted)' } },
+        'Controla quién recibe correos y qué tipos de alertas se envían.'
+      ),
+      React.createElement('span', { style: { fontSize: '0.8rem', padding: '4px 10px', borderRadius: 999, background: settings.environment === 'production' ? 'rgba(248, 113, 113, 0.15)' : 'rgba(52, 211, 153, 0.12)', color: settings.environment === 'production' ? '#b91c1c' : '#047857' } },
+        'Entorno: ' + envLabel
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Envío de correos de notificación'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Activa o desactiva todas las notificaciones por correo.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.email_enabled,
+            onChange: e => updateSetting({ email_enabled: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.email_enabled ? 'Activado' : 'Desactivado')
+        )
+      ),
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Solo administradores como destinatarios'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Cuando está activo, solo usuarios admin reciben alertas.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.admin_only,
+            onChange: e => updateSetting({ admin_only: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.admin_only ? 'Solo admins' : 'Admins y otros')
+        )
+      ),
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Alertas de servidor offline'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Controla si se envían correos cuando un servidor deja de reportar.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.offline_alerts_enabled,
+            onChange: e => updateSetting({ offline_alerts_enabled: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.offline_alerts_enabled ? 'Activadas' : 'Desactivadas')
         )
       )
     )
@@ -410,12 +1061,12 @@ function AdminPanel() {
 
   return React.createElement('div', { className: 'fade-in' },
     React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 20, overflowX: 'auto', paddingBottom: 5 } },
-      ['users', 'groups', 'alerts'].map(t => 
+      ['users', 'groups', 'alerts', 'notifications'].map(t => 
         React.createElement('button', { 
           key: t, 
           className: tab === t ? '' : 'secondary',
           onClick: () => setTab(t)
-        }, t === 'users' ? 'Usuarios' : t === 'groups' ? 'Grupos' : 'Alertas')
+        }, t === 'users' ? 'Usuarios' : t === 'groups' ? 'Grupos' : t === 'alerts' ? 'Alertas' : 'Notificaciones')
       )
     ),
     
@@ -452,13 +1103,12 @@ function AdminPanel() {
 
     tab === 'groups' && React.createElement(ServerGroupManager),
     tab === 'alerts' && React.createElement(AlertRulesManager),
+    tab === 'notifications' && React.createElement(NotificationSettingsPanel),
 
     editingUser && React.createElement(UserEditModal, { user: editingUser.id ? editingUser : null, onClose: () => setEditingUser(null), onSave: () => { setEditingUser(null); loadUsers(); } }),
     assigningUser && React.createElement(ServerAssignmentModal, { user: assigningUser, onClose: () => setAssigningUser(null) })
   );
 }
-
-// --- DASHBOARD COMPONENT ---
 
 function DataMonitoringDashboard({ currentServer, userInfo }) {
   const [data, setData] = useState([]);
@@ -468,7 +1118,14 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const res = await fetchJSON('/api/data-monitoring?limit=50');
+      if (!currentServer) {
+        setData([]);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      const url = '/api/data-monitoring?limit=50&entity_id=' + encodeURIComponent(currentServer.server_id);
+      const res = await fetchJSON(url);
       setData(res);
       setError(null);
     } catch (err) { setError(err.message); } 
@@ -479,20 +1136,37 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentServer && currentServer.server_id]);
 
   const flowCounts = {};
   data.forEach(d => { const f = d.flow || 'Unknown'; flowCounts[f] = (flowCounts[f] || 0) + 1; });
   const chartLabels = Object.keys(flowCounts);
   const chartData = Object.values(flowCounts);
 
-  if (!userInfo || (!userInfo.is_admin && !userInfo.can_view_data_monitoring)) return null;
-  if (!currentServer || !currentServer.data_monitoring_enabled) return null;
+  if (!userInfo) return null;
+
+  const isAdmin = !!userInfo.is_admin;
+  const hasGlobalDM = !!userInfo.can_view_data_monitoring;
+
+  if (!currentServer || !currentServer.data_monitoring_enabled) {
+    if (isAdmin || hasGlobalDM) {
+      return React.createElement('div', { className: 'card' }, 'Este servidor no tiene el dashboard de Postman habilitado');
+    }
+    return null;
+  }
+
+  const accessLevel = currentServer.postman_access_level || 'none';
+  if (!isAdmin && !hasGlobalDM && accessLevel === 'none') {
+    return React.createElement('div', { className: 'card' }, '⛔ Acceso denegado al panel Postman');
+  }
+
+  const canEdit = accessLevel === 'edit' || accessLevel === 'admin' || isAdmin;
 
   return React.createElement('div', { className: 'card' },
     React.createElement('div', { className: 'card-header' },
       React.createElement('div', { className: 'card-title' }, '📊 Dashboard Postman'),
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        canEdit && React.createElement('button', { className: 'secondary', onClick: () => alert('Funcionalidad de edición en desarrollo') }, '✏️ Editar'),
         React.createElement('button', { className: 'secondary', onClick: fetchData }, 'Refrescar')
       )
     ),
@@ -541,7 +1215,89 @@ function App() {
   const [authed, setAuthed] = useState(!!getDashboardToken());
   const [userInfo, setUserInfo] = useState(getUserInfo());
   const [currentView, setCurrentView] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const inactivityTimerRef = useRef(null);
   
+  // Sidebar Config
+  const [sidebarConfig, setSidebarConfig] = useState(() => {
+      // 1. Try from userInfo (backend persistence)
+      const u = getUserInfo();
+      if (u && u.sidebar_config) return u.sidebar_config;
+
+      // 2. Try from localStorage (legacy/fallback)
+      try {
+          const s = localStorage.getItem('sidebar_config');
+          if (s) {
+              const parsed = JSON.parse(s);
+              if (!parsed.sections) {
+                  return {
+                      sections: [
+                          { id: 'containers', label: '🐳 Monitor Contenedores', visible: parsed.showContainers !== false },
+                          { id: 'services', label: '⚙️ Gestión Servicios', visible: parsed.showServices !== false },
+                          { id: 'postman', label: '📊 Postman Dashboard', visible: parsed.showPostman !== false }
+                      ],
+                      general: { autoCollapseSidebar: true }
+                  };
+              }
+              if (!parsed.general) {
+                  parsed.general = { autoCollapseSidebar: true };
+              }
+              return parsed;
+          }
+      } catch {}
+      
+      // 3. Default
+      return {
+          sections: [
+              { id: 'containers', label: '🐳 Monitor Contenedores', visible: true },
+              { id: 'services', label: '⚙️ Gestión Servicios', visible: true },
+              { id: 'postman', label: '📊 Postman Dashboard', visible: true }
+          ],
+          general: { autoCollapseSidebar: true }
+      };
+  });
+  
+  // Auto-save Sidebar Config
+  useEffect(() => {
+      if (!authed) return;
+      
+      // Save to local storage for offline/fast load
+      localStorage.setItem('sidebar_config', JSON.stringify(sidebarConfig));
+      
+      // Debounce save to backend
+      const timer = setTimeout(() => {
+          fetchJSON('/api/user/sidebar-config', {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ config: sidebarConfig })
+          }).catch(err => console.error("Error saving sidebar config:", err));
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+  }, [sidebarConfig, authed]);
+
+  useEffect(() => {
+      if (!authed) return;
+      const autoCollapse = !sidebarConfig.general || sidebarConfig.general.autoCollapseSidebar !== false;
+      if (!autoCollapse) return;
+      const handleActivity = () => {
+          if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+          inactivityTimerRef.current = setTimeout(() => {
+              setSidebarCollapsed(true);
+          }, 3000);
+      };
+      window.addEventListener('mousemove', handleActivity);
+      window.addEventListener('keydown', handleActivity);
+      handleActivity();
+      return () => {
+          window.removeEventListener('mousemove', handleActivity);
+          window.removeEventListener('keydown', handleActivity);
+          if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      };
+  }, [authed, sidebarConfig.general && sidebarConfig.general.autoCollapseSidebar]);
+
+  const [showSidebarSettings, setShowSidebarSettings] = useState(false);
+
   // Login State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -598,6 +1354,7 @@ function App() {
         localStorage.setItem('dashboard_token', res.token);
         localStorage.setItem('user_info', JSON.stringify(res));
         setUserInfo(res);
+        if (res.sidebar_config) setSidebarConfig(res.sidebar_config);
         setAuthed(true);
       }
     } catch (e) { setLoginError(e.message); }
@@ -624,44 +1381,108 @@ function App() {
     );
   }
 
-  const Sidebar = () => React.createElement('div', { className: 'sidebar' },
+  const Sidebar = () => React.createElement('div', { className: sidebarCollapsed ? 'sidebar sidebar-collapsed' : 'sidebar', onMouseEnter: () => { if (sidebarCollapsed) setSidebarCollapsed(false); } },
     React.createElement('div', { className: 'sidebar-header' }, 
-        React.createElement('span', { style: { marginRight: 8 } }, '⚡'), 'ServPulse'
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 1 } },
+            React.createElement('span', null, '⚡'),
+            !sidebarCollapsed && React.createElement('span', null, 'ServPulse')
+        ),
+        React.createElement('button', { 
+            className: 'secondary', 
+            onClick: () => setSidebarCollapsed(!sidebarCollapsed),
+            style: { padding: '4px 8px', fontSize: '0.75rem' } 
+        }, sidebarCollapsed ? '⮞' : '⮜')
     ),
     React.createElement('div', { className: 'sidebar-nav' },
-        React.createElement('div', { className: `nav-item ${currentView === 'dashboard' ? 'active' : ''}`, onClick: () => setCurrentView('dashboard') }, '📊 Dashboard'),
-        userInfo?.is_admin && React.createElement('div', { className: `nav-item ${currentView === 'admin' ? 'active' : ''}`, onClick: () => setCurrentView('admin') }, '⚙️ Administración')
+        React.createElement('div', { className: `nav-item ${currentView === 'dashboard' ? 'active' : ''}`, onClick: () => setCurrentView('dashboard') }, sidebarCollapsed ? '📊' : '📊 Dashboard'),
+        userInfo?.is_admin && React.createElement('div', { className: `nav-item ${currentView === 'admin' ? 'active' : ''}`, onClick: () => setCurrentView('admin') }, sidebarCollapsed ? '⚙️' : '⚙️ Administración')
     ),
     React.createElement('div', { className: 'sidebar-footer' },
-        React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 10, color: 'var(--text-muted)' } }, userInfo?.name),
-        React.createElement('button', { className: 'secondary', style: { width: '100%' }, onClick: handleLogout }, 'Salir')
+        React.createElement('button', { 
+            className: 'secondary', 
+            style: { width: '100%', marginBottom: 10, fontSize: '0.85rem' }, 
+            onClick: () => setShowSidebarSettings(true) 
+        }, sidebarCollapsed ? '🛠️' : '🛠️ Configuración Panel'),
+        !sidebarCollapsed && React.createElement('div', { style: { fontSize: '0.9rem', marginBottom: 10, color: 'var(--text-muted)' } }, userInfo?.name),
+        React.createElement('button', { 
+            className: 'secondary', 
+            style: { width: '100%' }, 
+            onClick: handleLogout 
+        }, sidebarCollapsed ? '⏻' : 'Salir')
     )
   );
 
   const DashboardView = () => {
-    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0} };
+    if (!selected) {
+        return React.createElement('div', { className: 'fade-in' },
+            React.createElement('h2', { style: { marginBottom: 20 } }, 'Mis Servidores'),
+            servers.length === 0 
+                ? React.createElement('div', { className: 'card' }, 'No tienes servidores asignados.')
+                : React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 20 } },
+                    servers.map(s => {
+                        const statusText = s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos';
+                        const uptimeText = s.status === 'online' && s.uptime ? ` · ${s.uptime}` : '';
+                        return React.createElement('div', { 
+                            key: s.server_id, 
+                            className: 'card',
+                            style: { cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border)' },
+                            onMouseEnter: (e) => e.currentTarget.style.borderColor = 'var(--primary)',
+                            onMouseLeave: (e) => e.currentTarget.style.borderColor = 'var(--border)',
+                            onClick: () => setSelected(s.server_id)
+                        },
+                            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+                                React.createElement('div', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, s.server_id),
+                                React.createElement('span', { style: { fontSize: '1.5rem' } }, '🖥️')
+                            ),
+                            React.createElement('div', { style: { color: 'var(--text-muted)', fontSize: '0.9rem' } }, s.group_name ? `Grupo: ${s.group_name}` : 'Sin Grupo'),
+                            React.createElement('div', { style: { marginTop: 8, fontSize: '0.8rem' } }, 
+                              statusText + uptimeText
+                            ),
+                            React.createElement('div', { style: { marginTop: 15, fontSize: '0.85rem', color: 'var(--primary)' } }, 'Ver Métricas →')
+                        );
+                    })
+                )
+        );
+    }
+
+    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0}, network:{bytes_sent:0,bytes_recv:0} };
+    const selectedServer = servers.find(s => s.server_id === selected) || {};
+    const isOnline = selectedServer.status === 'online';
+    const statusLabel = selectedServer.status === 'offline' ? 'Offline' : (selectedServer.status === 'online' ? 'Online' : 'Sin datos');
+    const statusBg = isOnline ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)';
+    const statusColor = isOnline ? '#10b981' : '#ef4444';
+    const sentGb = latest.network && latest.network.bytes_sent ? (latest.network.bytes_sent / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
+    const recvGb = latest.network && latest.network.bytes_recv ? (latest.network.bytes_recv / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
     const cpuData = history.map(h => h.cpu.total);
-    const memData = history.map(h => Math.round((h.memory.used / h.memory.total) * 100));
+    const memData = history.map(h => Math.round((h.memory.used / Math.max(h.memory.total || 1, 1)) * 100));
+    const cpuPercent = typeof latest.cpu.total === 'number' ? latest.cpu.total.toFixed(1) : '0.0';
+    const memPercent = latest.memory.total ? Math.round((latest.memory.used / latest.memory.total) * 100) : 0;
+    const memUsedGb = latest.memory.used ? (latest.memory.used / 1024).toFixed(1) : '0.0';
+    const memTotalGb = latest.memory.total ? (latest.memory.total / 1024).toFixed(1) : '0.0';
+    const diskPercent = typeof latest.disk.percent === 'number' ? Math.round(latest.disk.percent) : 0;
+    const diskUsedGb = typeof latest.disk.used === 'number' ? latest.disk.used.toFixed(1) : '0.0';
+    const diskTotalGb = typeof latest.disk.total === 'number' ? latest.disk.total.toFixed(1) : '0.0';
     
     return React.createElement('div', { className: 'fade-in' },
         !status.ok && React.createElement('div', { style: { padding: 15, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 8, marginBottom: 20 } }, status.message),
         
         React.createElement('div', { className: 'card', style: { display: 'flex', gap: 15, alignItems: 'center', flexWrap: 'wrap' } },
-            React.createElement('span', { style: { color: 'var(--text-muted)' } }, 'Servidor:'),
-            React.createElement('select', { value: selected, onChange: e => setSelected(e.target.value), style: { width: 'auto', minWidth: 200 } },
-                servers.length === 0 ? React.createElement('option', null, 'Sin servidores') :
-                servers.map(s => React.createElement('option', { key: s.server_id, value: s.server_id }, `${s.server_id} ${s.group_name ? `(${s.group_name})` : ''}`))
+            React.createElement('button', { className: 'secondary', onClick: () => setSelected('') }, '⬅ Volver'),
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+                React.createElement('span', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, selected),
+                React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.find(s=>s.server_id===selected)?.group_name || '')
             ),
-            selected && React.createElement('span', { className: 'badge', style: { background: 'var(--bg-element)', padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem' } }, 'Conectado'),
+            React.createElement('span', { className: 'badge', style: { background: statusBg, padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem', marginLeft: 10, color: statusColor } }, statusLabel),
             React.createElement('div', { style: { marginLeft: 'auto' } },
-                selected && React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
+                React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
             )
         ),
 
         React.createElement('div', { className: 'grid-3' },
-            React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Carga del sistema' }),
-            React.createElement(MetricCard, { title: 'Memoria', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${(latest.memory.used/1024).toFixed(1)} / ${(latest.memory.total/1024).toFixed(1)} GB` }),
-            React.createElement(MetricCard, { title: 'Disco', value: `${Math.round(latest.disk.percent) || 0}%`, subtitle: `${latest.disk.used} / ${latest.disk.total} GB` })
+            React.createElement(MetricCard, { title: 'CPU Total', value: `${cpuPercent}%`, subtitle: 'Carga del sistema' }),
+            React.createElement(MetricCard, { title: 'Memoria', value: `${memPercent || 0}%`, subtitle: `${memUsedGb} / ${memTotalGb} GB` }),
+            React.createElement(MetricCard, { title: 'Disco', value: `${diskPercent || 0}%`, subtitle: `${diskUsedGb} / ${diskTotalGb} GB` }),
+            React.createElement(MetricCard, { title: 'Red', value: `${sentGb}↑ / ${recvGb}↓ GB`, subtitle: 'Totales enviados / recibidos' })
         ),
 
         React.createElement('div', { className: 'grid-2' },
@@ -675,7 +1496,12 @@ function App() {
             )
         ),
 
-        React.createElement(DataMonitoringDashboard, { currentServer: servers.find(s => s.server_id === selected), userInfo }),
+        (sidebarConfig.sections || []).filter(s => s.visible).map(s => {
+            if (s.id === 'containers') return React.createElement(ContainerMonitor, { key: s.id, containers: latest.docker?.containers });
+            if (s.id === 'services') return React.createElement(ServiceManager, { key: s.id, services: latest.services, serverId: selected });
+            if (s.id === 'postman') return React.createElement(DataMonitoringDashboard, { key: s.id, currentServer: servers.find(s => s.server_id === selected), userInfo });
+            return null;
+        }),
 
         editingThresholds && React.createElement(ThresholdModal, { serverId: editingThresholds, onClose: () => setEditingThresholds(null) })
     );
@@ -683,9 +1509,10 @@ function App() {
 
   return React.createElement('div', { className: 'app-container' },
     React.createElement(Sidebar),
-    React.createElement('main', { className: 'main-content' },
+    React.createElement('main', { className: sidebarCollapsed ? 'main-content main-content-collapsed' : 'main-content' },
         currentView === 'dashboard' ? React.createElement(DashboardView) : React.createElement(AdminPanel)
-    )
+    ),
+    showSidebarSettings && React.createElement(SidebarSettingsModal, { config: sidebarConfig, setConfig: setSidebarConfig, onClose: () => setShowSidebarSettings(false) })
   );
 }
 

@@ -1,25 +1,31 @@
 import json
 from pathlib import Path
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 import os
 import uuid
 import unicodedata
 import io
 import csv
+import logging
+import html
 
-from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
+import requests
+
+from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import create_engine, select, delete, text
+from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from pydantic import BaseModel, Field
 
 from .config import (
     DB_PATH,
@@ -31,8 +37,19 @@ from .config import (
     JWT_SECRET_KEY,
     JWT_ALGORITHM,
     JWT_EXPIRE_MINUTES,
+    WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_VERIFY_TOKEN,
+    WHATSAPP_SESSION_TTL_MINUTES,
+    WHATSAPP_FREE_MAX_SERVERS,
+    WHATSAPP_FAVORITE_SERVERS,
+    OFFLINE_CHECK_INTERVAL,
+    OFFLINE_MULTIPLIER,
+    OFFLINE_MIN_SECONDS,
+    APP_ENV,
+    IS_PRODUCTION,
 )
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand, NotificationSettings
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -41,13 +58,16 @@ from .schemas import (
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
     ServerDataMonitoringUpdateSchema,
     UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema,
-    ServerGroupSchema, ServerGroupCreateSchema
+    ServerGroupSchema, ServerGroupCreateSchema, ServiceSchema, AgentCommandResponse, ServiceActionSchema,
+    BulkServiceActionSchema, SidebarConfigUpdateSchema,
+    NotificationSettingsResponse, NotificationSettingsUpdate,
 )
 from .email_utils import send_alert_email
 import time
 import asyncio
 import jwt
-from datetime import timedelta
+
+logger = logging.getLogger("whatsapp-bot")
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -67,6 +87,657 @@ engine = get_engine()
 Base.metadata.create_all(engine)
 
 app = FastAPI(title="Monitor Integral")
+
+class WhatsAppSessionState:
+    INICIO = "inicio"
+    PIDIENDO_EMAIL = "pidiendo_email"
+    PIDIENDO_PASSWORD = "pidiendo_password"
+    MENU_PRINCIPAL = "menu_principal"
+    VIENDO_SERVIDOR = "viendo_servidor"
+    PIDIENDO_OPCION_MENU = "pidiendo_opcion_menu"
+
+
+class WhatsAppSessionData(dict):
+    pass
+
+
+_wa_sessions: Dict[str, WhatsAppSessionData] = {}
+_wa_favorite_server_ids = {
+    s.strip() for s in (WHATSAPP_FAVORITE_SERVERS or "").split(",") if s.strip()
+}
+_offline_threshold_seconds = max(
+    OFFLINE_MIN_SECONDS, int(OFFLINE_CHECK_INTERVAL * OFFLINE_MULTIPLIER)
+)
+
+
+def _wa_get_session(wa_id: str) -> WhatsAppSessionData:
+    now = datetime.utcnow()
+    sess = _wa_sessions.get(wa_id)
+    if not sess:
+        sess = WhatsAppSessionData(
+            wa_id=wa_id,
+            state=WhatsAppSessionState.INICIO,
+            created_at=now.isoformat(),
+            last_activity=now.isoformat(),
+        )
+        _wa_sessions[wa_id] = sess
+        return sess
+    try:
+        last = datetime.fromisoformat(sess.get("last_activity"))
+        delta = now - last
+        if delta.total_seconds() > WHATSAPP_SESSION_TTL_MINUTES * 60:
+            sess = WhatsAppSessionData(
+                wa_id=wa_id,
+                state=WhatsAppSessionState.INICIO,
+                created_at=now.isoformat(),
+                last_activity=now.isoformat(),
+            )
+            _wa_sessions[wa_id] = sess
+            return sess
+    except Exception:
+        sess["created_at"] = now.isoformat()
+    sess["last_activity"] = now.isoformat()
+    return sess
+
+
+def _wa_reset_session(wa_id: str):
+    if wa_id in _wa_sessions:
+        del _wa_sessions[wa_id]
+
+
+def _wa_send_messages(to: str, lines: List[str]) -> None:
+    if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        logger.warning("WhatsApp credentials not configured; skipping send")
+        return
+    body_text = "\n".join(lines).strip()
+    if not body_text:
+        return
+    url = f"https://graph.facebook.com/v17.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "text": {"body": body_text},
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        if resp.status_code >= 400:
+            logger.error(
+                "Error sending WhatsApp message: %s %s",
+                resp.status_code,
+                resp.text,
+            )
+    except Exception as exc:
+        logger.error("Exception sending WhatsApp message: %s", exc)
+
+
+def _wa_format_cpu_bar(percent: float) -> str:
+    try:
+        value = max(0.0, min(100.0, float(percent or 0)))
+    except Exception:
+        value = 0.0
+    total_blocks = 20
+    filled = int(round(value / 100.0 * total_blocks))
+    empty = total_blocks - filled
+    return "█" * filled + "░" * empty
+
+
+def _compute_server_status(sess: Session, server_id: str) -> Dict[str, Any]:
+    last = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if not last:
+        return {"status": "unknown", "last_seen": None}
+    now = datetime.utcnow()
+    if last.ts.tzinfo:
+        now = datetime.now(last.ts.tzinfo)
+    delta = (now - last.ts).total_seconds()
+    state = "online" if delta <= _offline_threshold_seconds else "offline"
+    return {"status": state, "last_seen": last.ts}
+
+
+def _wa_list_servers_for_user(user_id: int) -> List[Dict[str, Any]]:
+    with Session(engine) as sess:
+        configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
+        cfg_map = {c.server_id: c.enabled for c in configs}
+        db_user = sess.get(User, user_id)
+        if not db_user:
+            return []
+        results: List[Dict[str, Any]] = []
+        if db_user and not db_user.is_admin:
+            for link in db_user.server_links:
+                if link.server:
+                    status = _compute_server_status(sess, link.server.server_id)
+                    results.append(
+                        {
+                            "server_id": link.server.server_id,
+                            "group_name": link.server.group_name,
+                            "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                            "status": status["status"],
+                            "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                        }
+                    )
+        else:
+            servers = sess.execute(select(Server)).scalars().all()
+            for s in servers:
+                status = _compute_server_status(sess, s.server_id)
+                results.append(
+                    {
+                        "server_id": s.server_id,
+                        "group_name": s.group_name,
+                        "data_monitoring_enabled": cfg_map.get(s.server_id, False),
+                        "status": status["status"],
+                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                    }
+                )
+        return results
+
+
+def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
+    if server_id in _cache and _cache[server_id]:
+        return _cache[server_id][-1]
+    with Session(engine) as sess:
+        row = (
+            sess.execute(
+                select(Metric)
+                .where(Metric.server_id == server_id)
+                .order_by(Metric.id.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "server_id": row.server_id,
+            "ts": str(row.ts),
+            "memory": {
+                "total": row.mem_total,
+                "used": row.mem_used,
+                "free": row.mem_free,
+                "cache": row.mem_cache,
+            },
+            "cpu": {
+                "total": row.cpu_total,
+                "per_core": json.loads(row.cpu_per_core or "[]"),
+            },
+            "disk": {
+                "total": row.disk_total,
+                "used": row.disk_used,
+                "free": row.disk_free,
+                "percent": row.disk_percent,
+            },
+            "docker": {
+                "running_containers": row.docker_running,
+                "containers": json.loads(row.docker_containers or "[]"),
+            },
+            "services": json.loads(row.services or "[]"),
+        }
+
+
+def _compute_uptime_for_server(sess: Session, server_id: str) -> Optional[str]:
+    first = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.asc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    last = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if not first or not last:
+        return None
+    delta = (last.ts - first.ts).total_seconds()
+    if delta <= 0:
+        return None
+    days = int(delta // 86400)
+    hours = int((delta % 86400) // 3600)
+    minutes = int((delta % 3600) // 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _wa_compute_uptime(server_id: str) -> Optional[str]:
+    with Session(engine) as sess:
+        return _compute_uptime_for_server(sess, server_id)
+
+def _wa_build_alerts_summary(server_id: str, metrics: Dict[str, Any]) -> List[str]:
+    alerts: List[str] = []
+    with Session(engine) as sess:
+        cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+        thr = sess.execute(
+            select(ServerThreshold).where(ServerThreshold.server_id == server_id)
+        ).scalar_one_or_none()
+        if not cfg:
+            return []
+        cpu_thr = thr.cpu_threshold if thr and thr.cpu_threshold is not None else cfg.cpu_total_percent
+        mem_thr = (
+            thr.memory_threshold
+            if thr and thr.memory_threshold is not None
+            else cfg.memory_used_percent
+        )
+        disk_thr = (
+            thr.disk_threshold
+            if thr and thr.disk_threshold is not None
+            else cfg.disk_used_percent
+        )
+    cpu_val = (metrics.get("cpu") or {}).get("total") or 0
+    mem = metrics.get("memory") or {}
+    mem_total = mem.get("total") or 0
+    mem_used = mem.get("used") or 0
+    mem_pct = (mem_used / mem_total * 100.0) if mem_total else 0
+    disk = metrics.get("disk") or {}
+    disk_pct = disk.get("percent") or 0
+    if cpu_val >= cpu_thr:
+        alerts.append(f"CPU alta: {cpu_val:.1f}% (umbral {cpu_thr:.1f}%)")
+    if mem_pct >= mem_thr:
+        alerts.append(f"Memoria alta: {mem_pct:.1f}% (umbral {mem_thr:.1f}%)")
+    if disk_pct >= disk_thr:
+        alerts.append(f"Disco alto: {disk_pct:.1f}% (umbral {disk_thr:.1f}%)")
+    return alerts
+
+
+def _wa_show_server_metrics(sess: WhatsAppSessionData, server_id: str) -> List[str]:
+    metrics = _wa_get_latest_metrics(server_id)
+    if not metrics:
+        return [
+            f"No hay métricas recientes para el servidor {server_id}.",
+            "Asegúrate de que el agente esté reportando correctamente.",
+            "Envía 0 para volver al menú principal.",
+        ]
+    cpu = metrics.get("cpu") or {}
+    disk = metrics.get("disk") or {}
+    mem = metrics.get("memory") or {}
+    services = metrics.get("services") or []
+    cpu_val = cpu.get("total") or 0
+    cpu_bar = _wa_format_cpu_bar(cpu_val)
+    mem_total = mem.get("total") or 0
+    mem_used = mem.get("used") or 0
+    mem_free = mem.get("free") or 0
+    disk_total = disk.get("total") or 0
+    disk_used = disk.get("used") or 0
+    disk_free = disk.get("free") or 0
+    disk_pct = disk.get("percent") or 0
+    uptime = _wa_compute_uptime(server_id)
+    problematic_services = [s for s in services if s.get("status") != "running"]
+    svc_lines: List[str] = []
+    if problematic_services:
+        for s in problematic_services[:5]:
+            name = s.get("display_name") or s.get("name")
+            status = s.get("status")
+            svc_lines.append(f"- {name}: {status}")
+        if len(problematic_services) > 5:
+            svc_lines.append(f"... y {len(problematic_services) - 5} servicios más con problemas.")
+    else:
+        svc_lines.append("Todos los servicios reportan estado 'running'.")
+    alerts = _wa_build_alerts_summary(server_id, metrics)
+    alert_lines: List[str] = []
+    if alerts:
+        alert_lines.append("⚠️ Alertas activas:")
+        alert_lines.extend(f"- {a}" for a in alerts)
+    else:
+        alert_lines.append("✅ Sin alertas activas según umbrales configurados.")
+    ts = metrics.get("ts")
+    lines: List[str] = []
+    lines.append(f"📊 Estado de {server_id}")
+    if ts:
+        lines.append(f"Última muestra: {ts}")
+    lines.append("")
+    lines.append(f"CPU: {cpu_val:.1f}%")
+    lines.append(cpu_bar)
+    lines.append("")
+    lines.append(
+        f"Memoria: {mem_used:.1f}/{mem_total:.1f} MB (libre {mem_free:.1f} MB)"
+    )
+    lines.append(
+        f"Disco: {disk_used:.1f}/{disk_total:.1f} GB usados ({disk_pct:.1f}%)"
+    )
+    if uptime:
+        lines.append(f"Tiempo de actividad estimado: {uptime}")
+    lines.append("")
+    lines.append("Servicios críticos:")
+    lines.extend(svc_lines)
+    lines.append("")
+    lines.extend(alert_lines)
+    lines.append("")
+    lines.append("Opciones:")
+    lines.append("1. Refrescar métricas")
+    lines.append("0. Volver al menú principal")
+    with Session(engine) as db:
+        try:
+            db.add(
+                AuditLog(
+                    action="whatsapp_view_metrics",
+                    target_type="server",
+                    target_id=server_id,
+                    changes=json.dumps({"wa_id": sess.get("wa_id")}),
+                    user_email=sess.get("user_email"),
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+    return lines
+
+
+def _wa_build_main_menu(sess: WhatsAppSessionData) -> List[str]:
+    user_id = sess.get("user_id")
+    if not user_id:
+        sess["state"] = WhatsAppSessionState.INICIO
+        return [
+            "No encuentro una sesión activa ahora mismo.",
+            "Envía tu correo de acceso para iniciar de nuevo.",
+        ]
+    servers = _wa_list_servers_for_user(int(user_id))
+    pinned = [s for s in servers if s["server_id"] in _wa_favorite_server_ids]
+    others = [s for s in servers if s["server_id"] not in _wa_favorite_server_ids]
+    ordered = pinned + others
+    limited = False
+    visible_servers = ordered
+    if WHATSAPP_FREE_MAX_SERVERS and len(ordered) > WHATSAPP_FREE_MAX_SERVERS:
+        visible_servers = ordered[:WHATSAPP_FREE_MAX_SERVERS]
+        limited = True
+    sess["servers_menu"] = visible_servers
+    lines: List[str] = []
+    lines.append("📋 Estos son los servidores disponibles para tu usuario:")
+    if not visible_servers:
+        lines.append("(No tienes servidores asignados todavía.)")
+    else:
+        for idx, srv in enumerate(visible_servers, start=1):
+            label = srv["server_id"]
+            if srv["server_id"] in _wa_favorite_server_ids:
+                label = f"⭐ {label}"
+            if srv.get("group_name"):
+                label = f"{label} ({srv['group_name']})"
+            state = srv.get("status") or "unknown"
+            if state == "online":
+                label = f"{label} [ON]"
+            elif state == "offline":
+                label = f"{label} [OFF]"
+            lines.append(f"{idx}. {label}")
+    lines.append("")
+    lines.append("Responde con el número del servidor para ver sus métricas.")
+    lines.append("También puedes escribir ESTADO seguido del nombre exacto del servidor.")
+    lines.append("Escribe 0 para refrescar este menú.")
+    lines.append("Escribe CAMBIAR USUARIO para iniciar sesión con otra cuenta.")
+    if limited:
+        lines.append("")
+        lines.append(
+            f"Versión gratuita: se muestran solo los primeros {WHATSAPP_FREE_MAX_SERVERS} servidores."
+        )
+        lines.append("Para ver el resto, entra al panel web o consulta la versión completa.")
+    with Session(engine) as db:
+        try:
+            db.add(
+                AuditLog(
+                    action="whatsapp_menu",
+                    target_type="whatsapp",
+                    target_id=sess.get("wa_id"),
+                    changes=json.dumps(
+                        {"servers": [s.get("server_id") for s in servers]}
+                    ),
+                    user_email=sess.get("user_email"),
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+    return lines
+
+
+def handle_whatsapp_conversation(wa_id: str, text: str) -> List[str]:
+    raw = (text or "").strip()
+    if not raw:
+        return [
+            "No he recibido ningún texto.",
+            "Envía un saludo (por ejemplo, hola) o una opción del menú.",
+        ]
+    upper = raw.upper()
+    if upper == "CAMBIAR USUARIO":
+        sess = _wa_get_session(wa_id)
+        with Session(engine) as db:
+            try:
+                db.add(
+                    AuditLog(
+                        action="whatsapp_logout",
+                        target_type="user",
+                        target_id=str(sess.get("user_id")),
+                        changes=json.dumps({"wa_id": wa_id}),
+                        user_email=sess.get("user_email"),
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        _wa_reset_session(wa_id)
+        return [
+            "Has cerrado sesión.",
+            "Envía tu correo de acceso para iniciar sesión con otro usuario.",
+        ]
+    sess = _wa_get_session(wa_id)
+    state = sess.get("state", WhatsAppSessionState.INICIO)
+    norm = _norm(raw)
+    greeting_triggers = {
+        "hola",
+        "hi",
+        "hello",
+        "buenas",
+        "buenos dias",
+        "buenas tardes",
+        "buenas noches",
+    }
+    if norm in greeting_triggers:
+        if not sess.get("user_id"):
+            sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+            return [
+                "👋 Hola, bienvenido al monitoreo de servidores de Wingsoft.",
+                "Te ayudo a revisar el estado de tus servidores desde aquí.",
+                "Para empezar, envía el correo que usas en el monitor (ej: usuario@empresa.com).",
+                "En cualquier momento puedes escribir CAMBIAR USUARIO para entrar con otra cuenta.",
+            ]
+        sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+        return _wa_build_main_menu(sess)
+    if state == WhatsAppSessionState.INICIO:
+        sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+        return [
+            "👋 Hola, bienvenido al monitoreo de servidores de Wingsoft.",
+            "Te ayudo a revisar el estado de tus servidores desde aquí.",
+            "Para empezar, envía el correo que usas en el monitor (ej: usuario@empresa.com).",
+            "En cualquier momento puedes escribir CAMBIAR USUARIO para entrar con otra cuenta.",
+        ]
+    if state == WhatsAppSessionState.PIDIENDO_EMAIL:
+        sess["pending_email"] = raw
+        sess["state"] = WhatsAppSessionState.PIDIENDO_PASSWORD
+        return [
+            f"✅ Correo recibido: {raw}",
+            "🔒 Ahora envía tu contraseña de acceso al monitor.",
+            "Solo tú ves estos datos; si te equivocas podrás intentarlo de nuevo.",
+        ]
+    if state == WhatsAppSessionState.PIDIENDO_PASSWORD:
+        email = sess.get("pending_email")
+        if not email:
+            sess["state"] = WhatsAppSessionState.PIDIENDO_EMAIL
+            return [
+                "No tengo registrado tu correo.",
+                "Por favor envía primero tu correo de acceso.",
+            ]
+        try:
+            login_data = perform_login(email, raw)
+        except HTTPException:
+            return [
+                "❌ Credenciales inválidas.",
+                "Revisa tu correo y contraseña e inténtalo nuevamente.",
+                "Envía de nuevo tu contraseña o escribe CAMBIAR USUARIO para usar otra cuenta.",
+            ]
+        sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+        sess["user_email"] = login_data["email"]
+        sess["user_name"] = login_data["name"]
+        sess["dashboard_token"] = login_data["token"]
+        sess["user_id"] = login_data["user_id"]
+        with Session(engine) as db:
+            try:
+                db.add(
+                    AuditLog(
+                        action="whatsapp_login",
+                        target_type="user",
+                        target_id=str(login_data["user_id"]),
+                        changes=json.dumps({"wa_id": wa_id}),
+                        user_email=login_data["email"],
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        return _wa_build_main_menu(sess)
+    if state == WhatsAppSessionState.MENU_PRINCIPAL:
+        if upper.startswith("ESTADO "):
+            target = raw[len("ESTADO "):].strip()
+            if not target:
+                return [
+                    "Para consultar el estado envía por ejemplo:",
+                    "ESTADO servidor-1",
+                ]
+            servers = sess.get("servers_menu") or []
+            match = next((s for s in servers if s.get("server_id") == target), None)
+            if not match:
+                return [
+                    f"No encuentro el servidor '{target}' en tu menú actual.",
+                    "Asegúrate de escribir el ID exactamente como aparece en la lista.",
+                    "También puedes elegirlo por número del listado.",
+                ]
+            sess["state"] = WhatsAppSessionState.VIENDO_SERVIDOR
+            sess["selected_server_id"] = match["server_id"]
+            return _wa_show_server_metrics(sess, match["server_id"])
+        if raw == "0":
+            return _wa_build_main_menu(sess)
+        if raw.isdigit():
+            idx = int(raw)
+            servers = sess.get("servers_menu") or []
+            if 1 <= idx <= len(servers):
+                srv = servers[idx - 1]
+                sess["state"] = WhatsAppSessionState.VIENDO_SERVIDOR
+                sess["selected_server_id"] = srv["server_id"]
+                return _wa_show_server_metrics(sess, srv["server_id"])
+            return [
+                "No reconozco esa opción.",
+                "Envía un número de la lista o 0 para refrescar el menú.",
+            ]
+        return [
+            "No he podido entender esa opción.",
+            "Envía un número de servidor, 0 para menú o CAMBIAR USUARIO.",
+        ]
+    if state == WhatsAppSessionState.VIENDO_SERVIDOR:
+        if raw == "0":
+            sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+            return _wa_build_main_menu(sess)
+        if raw == "1":
+            server_id = sess.get("selected_server_id")
+            if not server_id:
+                sess["state"] = WhatsAppSessionState.MENU_PRINCIPAL
+                return _wa_build_main_menu(sess)
+            return _wa_show_server_metrics(sess, server_id)
+        return [
+            "Opciones:",
+            "1. Refrescar métricas del servidor actual",
+            "0. Volver al menú principal",
+        ]
+    sess["state"] = WhatsAppSessionState.INICIO
+    return [
+        "Estado interno inválido, reiniciando conversación.",
+        "Envía tu correo de acceso para comenzar.",
+    ]
+
+
+@app.get("/api/whatsapp/webhook")
+def whatsapp_verify(
+    mode: Optional[str] = Query(None, alias="hub.mode"),
+    token: Optional[str] = Query(None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN and challenge:
+        return Response(content=challenge, media_type="text/plain")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    try:
+        entries = body.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", []) or []
+                for msg in messages:
+                    from_id = msg.get("from")
+                    if not from_id:
+                        continue
+                    msg_type = msg.get("type")
+                    text = None
+                    if msg_type == "text":
+                        text = (msg.get("text") or {}).get("body")
+                    elif msg_type == "button":
+                        text = (msg.get("button") or {}).get("text")
+                    if text is None:
+                        continue
+                    replies = handle_whatsapp_conversation(from_id, text)
+                    if replies:
+                        _wa_send_messages(from_id, replies)
+        return {"status": "ok"}
+    except Exception:
+        logger.exception("Error processing WhatsApp webhook")
+        raise HTTPException(status_code=500, detail="Error processing webhook")
+
+
+@app.api_route("/api/twilio/whatsapp/webhook", methods=["GET", "POST"])
+async def twilio_whatsapp_webhook(request: Request):
+    if request.method == "GET":
+        return Response(content="<Response></Response>", media_type="application/xml")
+    try:
+        form = await request.form()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid form payload")
+    from_number = form.get("From") or ""
+    body = form.get("Body") or ""
+    wa_id = from_number.replace("whatsapp:", "") if from_number else "unknown"
+    replies = handle_whatsapp_conversation(wa_id, body)
+    text = "\n".join(replies) if replies else "No hay respuesta disponible."
+    escaped = html.escape(text)
+    twiml = f"<Response><Message>{escaped}</Message></Response>"
+    return Response(content=twiml, media_type="text/xml")
+
 
 # --- Rate Limiting Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -193,6 +864,46 @@ def ensure_environment_column():
                 print(f"Error migrando environment: {e}")
                 sess.rollback()
 
+def ensure_server_group_column():
+    """Migración manual para agregar group_name a servers si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(Server.group_name).limit(1))
+        except Exception:
+            print("Agregando columna group_name a servers...")
+            try:
+                sess.execute(text("ALTER TABLE servers ADD COLUMN group_name VARCHAR(50)"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando group_name: {e}")
+                sess.rollback()
+
+def ensure_notification_settings():
+    with Session(engine) as sess:
+        existing = sess.execute(select(NotificationSettings)).scalars().first()
+        if not existing:
+            cfg = NotificationSettings(
+                email_enabled=True,
+                admin_only=True,
+                offline_alerts_enabled=not IS_PRODUCTION,
+            )
+            sess.add(cfg)
+            sess.commit()
+
+
+def get_notification_settings(sess: Session) -> NotificationSettings:
+    cfg = sess.execute(select(NotificationSettings)).scalars().first()
+    if not cfg:
+        cfg = NotificationSettings(
+            email_enabled=True,
+            admin_only=True,
+            offline_alerts_enabled=not IS_PRODUCTION,
+        )
+        sess.add(cfg)
+        sess.commit()
+        sess.refresh(cfg)
+    return cfg
+
 def ensure_admin_assignments():
     """Asegura que todos los administradores tengan asignados todos los servidores (para alertas)."""
     with Session(engine) as sess:
@@ -205,23 +916,55 @@ def ensure_admin_assignments():
                 for srv in servers:
                     if srv.id not in existing_links:
                         print(f"Auto-asignando {srv.server_id} al admin {admin.email}")
-                        link = UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True)
+                        link = UserServerLink(user_id=admin.id, server_id=srv.id, receive_alerts=True, postman_access_level='admin')
                         sess.add(link)
             sess.commit()
         except Exception as e:
             print(f"Error en ensure_admin_assignments: {e}")
             sess.rollback()
 
+def ensure_postman_access_column():
+    """Migración manual para agregar postman_access_level a user_server_link si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(UserServerLink.postman_access_level).limit(1))
+        except Exception:
+            print("Agregando columna postman_access_level a user_server_link...")
+            try:
+                sess.execute(text("ALTER TABLE user_server_link ADD COLUMN postman_access_level VARCHAR(20) DEFAULT 'none'"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando user_server_link: {e}")
+                sess.rollback()
+
+def ensure_sidebar_config_column():
+    """Migración manual para agregar sidebar_config a users si no existe."""
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(User.sidebar_config).limit(1))
+        except Exception:
+            print("Agregando columna sidebar_config a users...")
+            try:
+                sess.execute(text("ALTER TABLE users ADD COLUMN sidebar_config TEXT DEFAULT NULL"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando users: {e}")
+                sess.rollback()
+
 @app.on_event("startup")
 def startup():
     try:
         ensure_recipient_type_column()
         ensure_link_column()
+        ensure_postman_access_column()
+        ensure_sidebar_config_column()
         ensure_environment_column()
         ensure_server_group_column()
+        ensure_notification_settings()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
+        asyncio.create_task(_offline_monitor_loop())
     except Exception as e:
         print(f"Advertencia en startup: {e}")
 
@@ -237,6 +980,51 @@ _threshold_cache: dict[str, dict] = {}
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
 ALERT_COOLDOWN = 3600
+
+
+async def _offline_monitor_loop():
+    while True:
+        await asyncio.sleep(OFFLINE_CHECK_INTERVAL)
+        try:
+            with Session(engine) as sess:
+                settings = get_notification_settings(sess)
+                if not settings.email_enabled or not settings.offline_alerts_enabled:
+                    continue
+                servers = sess.execute(select(Server)).scalars().all()
+                now = datetime.utcnow()
+                for srv in servers:
+                    status = _compute_server_status(sess, srv.server_id)
+                    if status["status"] != "offline":
+                        continue
+                    key = (srv.server_id, "offline")
+                    last_sent = _alert_state.get(key, 0)
+                    current_time = time.time()
+                    if current_time - last_sent <= ALERT_COOLDOWN:
+                        continue
+                    recipients, applied_rules = get_alert_recipients(sess, srv, "offline")
+                    if not recipients:
+                        continue
+                    last_seen = status["last_seen"]
+                    if last_seen:
+                        delta = (now - last_seen).total_seconds()
+                        msg = f"El servidor no reporta métricas desde {last_seen} ({int(delta)} segundos)."
+                        current_value = float(delta)
+                    else:
+                        msg = "El servidor no ha reportado métricas todavía."
+                        current_value = 0.0
+                    print(f"[ALERT] Sending Offline alert for {srv.server_id}. Applied rules: {applied_rules}")
+                    send_alert_email(
+                        server_id=srv.server_id,
+                        alert_type="Servidor Offline",
+                        current_value=current_value,
+                        threshold=float(_offline_threshold_seconds),
+                        extra_recipients=recipients,
+                        full_metrics={},
+                        custom_message=msg,
+                    )
+                    _alert_state[key] = current_time
+        except Exception as e:
+            print(f"Error in offline monitor loop: {e}")
 
 
 def create_jwt_for_user(user_id: int) -> str:
@@ -317,46 +1105,46 @@ def require_data_monitoring_access(user: dict = Depends(get_current_user_from_to
             )
     return user
 
-@app.post("/api/login")
-@limiter.limit("5/minute")
-def login(request: Request, payload: LoginSchema):
-    identifier = _norm(payload.email or "")
-    password = (payload.password or "").strip()
-    
+
+def perform_login(identifier: str, password: str) -> Dict[str, Any]:
+    identifier = _norm(identifier or "")
+    password = (password or "").strip()
     with Session(engine) as sess:
-        # Buscar usuario por email
-        # Primero intentamos coincidencia exacta
         user = sess.execute(select(User).where(User.email == identifier)).scalar_one_or_none()
-        
-        # Si no, buscar si el identificador coincide con la parte local del correo
         if not user:
-             # Esto es menos eficiente pero permite login corto. 
-             # Idealmente el cliente debería enviar el email completo.
-             all_users = sess.execute(select(User)).scalars().all()
-             for u in all_users:
-                 if _norm(u.email) == identifier or _norm(u.email.split('@')[0]) == identifier:
-                     user = u
-                     break
-        
+            all_users = sess.execute(select(User)).scalars().all()
+            for u in all_users:
+                if _norm(u.email) == identifier or _norm(u.email.split('@')[0]) == identifier:
+                    user = u
+                    break
         if not user or not verify_password(password, user.password_hash):
             raise HTTPException(status_code=401, detail="Credenciales inválidas")
-        
         token = uuid.uuid4().hex
-        
-        # Guardar sesión en DB
         new_session = UserSession(token=token, user_id=user.id)
         sess.add(new_session)
         cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user.id)).scalar_one_or_none()
         can_view_dm = cfg.enabled if cfg else False
         sess.commit()
-        
+        sidebar_conf = None
+        if user.sidebar_config:
+            try:
+                sidebar_conf = json.loads(user.sidebar_config)
+            except:
+                pass
         return {
-            "token": token, 
-            "email": user.email, 
-            "name": user.name, 
+            "token": token,
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
             "is_admin": user.is_admin,
-            "can_view_data_monitoring": can_view_dm
+            "can_view_data_monitoring": can_view_dm,
+            "sidebar_config": sidebar_conf,
         }
+
+@app.post("/api/login")
+@limiter.limit("5/minute")
+def login(request: Request, payload: LoginSchema):
+    return perform_login(payload.email or "", payload.password or "")
 
 @app.post("/api/logout")
 def logout(x_dashboard_token: Optional[str] = Header(None)):
@@ -368,6 +1156,38 @@ def logout(x_dashboard_token: Optional[str] = Header(None)):
         sess.commit()
     
     return {"status": "logged_out"}
+
+@app.get("/api/user/sidebar-config")
+def get_sidebar_config(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+             raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        config = None
+        if db_user.sidebar_config:
+            try:
+                config = json.loads(db_user.sidebar_config)
+            except:
+                pass
+        return {"config": config}
+
+@app.put("/api/user/sidebar-config")
+def update_sidebar_config(payload: SidebarConfigUpdateSchema, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+             raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        # Guardar como JSON string
+        try:
+            db_user.sidebar_config = json.dumps(payload.config)
+            sess.commit()
+        except Exception as e:
+            sess.rollback()
+            raise HTTPException(status_code=500, detail=f"Error guardando configuración: {str(e)}")
+            
+        return {"status": "updated", "config": payload.config}
 
 # --- Gestión de Usuarios (Admin) ---
 
@@ -497,7 +1317,8 @@ def assign_servers_to_user(user_id: int, payload: ServerAssignmentSchema, user: 
                     link = UserServerLink(
                         user_id=user_id,
                         server_id=s_int_id,
-                        receive_alerts=item.receive_alerts
+                        receive_alerts=item.receive_alerts,
+                        postman_access_level=item.postman_access_level
                     )
                     sess.add(link)
         
@@ -516,7 +1337,8 @@ def get_user_servers(user_id: int, user: dict = Depends(require_admin)):
             # Asegurarse de que link.server esté cargado
             res.append({
                 "server_id": link.server.server_id,
-                "receive_alerts": link.receive_alerts
+                "receive_alerts": link.receive_alerts,
+                "postman_access_level": link.postman_access_level
             })
         return res
 
@@ -550,20 +1372,43 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         configs = sess.execute(select(DataMonitoringServerConfig)).scalars().all()
         cfg_map = {c.server_id: c.enabled for c in configs}
         db_user = sess.get(User, user["user_id"])
+        
+        results = []
+        
         if db_user and not db_user.is_admin:
-            servers = [link.server for link in db_user.server_links if link.server]
+            for link in db_user.server_links:
+                if link.server:
+                    status = _compute_server_status(sess, link.server.server_id)
+                    uptime = _compute_uptime_for_server(sess, link.server.server_id) if status["status"] == "online" else None
+                    results.append({
+                        "server_id": link.server.server_id,
+                        "created_at": str(link.server.created_at),
+                        "group_name": link.server.group_name,
+                        "report_interval": link.server.report_interval,
+                        "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                        "postman_access_level": link.postman_access_level,
+                        "status": status["status"],
+                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                        "uptime": uptime,
+                    })
         else:
             servers = sess.execute(select(Server)).scalars().all()
-        return [
-            {
-                "server_id": s.server_id, 
-                "created_at": str(s.created_at), 
-                "group_name": s.group_name,
-                "report_interval": s.report_interval,
-                "data_monitoring_enabled": cfg_map.get(s.server_id, False)
-            } 
-            for s in servers
-        ]
+            for s in servers:
+                status = _compute_server_status(sess, s.server_id)
+                uptime = _compute_uptime_for_server(sess, s.server_id) if status["status"] == "online" else None
+                results.append({
+                    "server_id": s.server_id,
+                    "created_at": str(s.created_at),
+                    "group_name": s.group_name,
+                    "report_interval": s.report_interval,
+                    "data_monitoring_enabled": cfg_map.get(s.server_id, False),
+                    "postman_access_level": "admin",
+                    "status": status["status"],
+                    "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                    "uptime": uptime,
+                })
+                
+        return results
 
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):
@@ -618,7 +1463,7 @@ def list_alert_recipients(user: dict = Depends(require_admin)):
     return recipients
 
 def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
-    # 1. Alert Rules
+    settings = get_notification_settings(sess)
     rules = sess.execute(select(AlertRule).where(AlertRule.alert_type == alert_type)).scalars().all()
     recipients = []
     applied_rules = []
@@ -640,15 +1485,22 @@ def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
                     recipients.extend(rule_emails)
             except:
                 pass
+
+            try:
+                extra = json.loads(rule.extra_emails or "[]")
+                if isinstance(extra, list):
+                    recipients.extend(extra)
+            except:
+                pass
                 
-    # 3. Assigned Users
-    # srv is a Server object, which has 'user_links' relationship
     if srv.user_links:
         for link in srv.user_links:
-            # Check link specific flag (defaults to True).
-            # We assume explicit assignment implies permission unless turned off.
             if link.receive_alerts and link.user.email:
                 recipients.append(link.user.email)
+
+    if settings.admin_only:
+        admins = sess.execute(select(User).where(User.is_admin == True)).scalars().all()
+        recipients = [u.email for u in admins if u.email]
 
     return list(set(recipients)), applied_rules
 
@@ -680,6 +1532,51 @@ def delete_alert_recipient(recipient_id: int, user: dict = Depends(require_admin
         return {"status": "deleted"}
 
 
+@app.get("/api/admin/notification-settings", response_model=NotificationSettingsResponse)
+def get_notification_settings_api(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        cfg = get_notification_settings(sess)
+        return NotificationSettingsResponse(
+            email_enabled=cfg.email_enabled,
+            admin_only=cfg.admin_only,
+            offline_alerts_enabled=cfg.offline_alerts_enabled,
+            environment=APP_ENV,
+        )
+
+
+@app.post("/api/admin/notification-settings", response_model=NotificationSettingsResponse)
+def update_notification_settings_api(payload: NotificationSettingsUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        cfg = get_notification_settings(sess)
+        changes = {}
+        if payload.email_enabled is not None and payload.email_enabled != cfg.email_enabled:
+            changes["email_enabled"] = {"old": cfg.email_enabled, "new": payload.email_enabled}
+            cfg.email_enabled = payload.email_enabled
+        if payload.admin_only is not None and payload.admin_only != cfg.admin_only:
+            changes["admin_only"] = {"old": cfg.admin_only, "new": payload.admin_only}
+            cfg.admin_only = payload.admin_only
+        if payload.offline_alerts_enabled is not None and payload.offline_alerts_enabled != cfg.offline_alerts_enabled:
+            changes["offline_alerts_enabled"] = {"old": cfg.offline_alerts_enabled, "new": payload.offline_alerts_enabled}
+            cfg.offline_alerts_enabled = payload.offline_alerts_enabled
+        if changes:
+            log = AuditLog(
+                action="update_notification_settings",
+                target_type="notification_settings",
+                target_id=str(cfg.id),
+                changes=json.dumps(changes),
+                user_email=user.get("email"),
+            )
+            sess.add(log)
+        sess.commit()
+        sess.refresh(cfg)
+        return NotificationSettingsResponse(
+            email_enabled=cfg.email_enabled,
+            admin_only=cfg.admin_only,
+            offline_alerts_enabled=cfg.offline_alerts_enabled,
+            environment=APP_ENV,
+        )
+
+
 @app.post("/api/admin/test-email")
 def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
     """
@@ -687,7 +1584,10 @@ def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require
     Envía un correo de prueba al destinatario especificado.
     """
     try:
-        # Usamos send_alert_email con datos simulados
+        with Session(engine) as sess:
+            settings = get_notification_settings(sess)
+            if not settings.email_enabled:
+                raise HTTPException(status_code=400, detail="El envío de correos está desactivado")
         send_alert_email(
             server_id="TEST-SERVER",
             alert_type="PRUEBA DE CORREO",
@@ -697,6 +1597,8 @@ def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require
             full_metrics={}
         )
         return {"status": "sent", "message": f"Correo de prueba enviado a {payload.email}"}
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -721,6 +1623,7 @@ def list_alert_rules(user: dict = Depends(require_admin)):
                 server_scope=r.server_scope,
                 target_id=r.target_id,
                 emails=emails_list,
+                extra_emails=json.loads(r.extra_emails) if r.extra_emails else [],
                 created_at=r.created_at
             ))
         return res
@@ -732,7 +1635,8 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             alert_type=payload.alert_type,
             server_scope=payload.server_scope,
             target_id=payload.target_id,
-            emails=json.dumps(payload.emails)
+            emails=json.dumps(payload.emails),
+            extra_emails=json.dumps(payload.extra_emails)
         )
         sess.add(new_rule)
         sess.commit()
@@ -744,6 +1648,7 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             server_scope=new_rule.server_scope,
             target_id=new_rule.target_id,
             emails=payload.emails,
+            extra_emails=payload.extra_emails,
             created_at=new_rule.created_at
         )
 
@@ -955,85 +1860,97 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             disk_free=payload.disk.free,
             disk_percent=payload.disk.percent,
             docker_running=payload.docker.running_containers,
-            docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers])
+            docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
+            services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]"
         )
         sess.add(m)
         sess.commit()
 
-        # Verificar Alertas
         try:
-            # Cargar configuración de alertas global
-            alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
-            
-            # Cargar umbrales específicos (con caché)
-            thresholds = _threshold_cache.get(payload.server_id)
-            if thresholds is None:
-                # Si no está en caché, buscar en DB
-                t_db = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == payload.server_id)).scalar_one_or_none()
-                if t_db:
-                    thresholds = {
-                        "cpu": t_db.cpu_threshold,
-                        "memory": t_db.memory_threshold,
-                        "disk": t_db.disk_threshold
-                    }
-                else:
-                    thresholds = {}
-                _threshold_cache[payload.server_id] = thresholds
-            
-            # Definir límites efectivos (Global vs Específico)
-            # Prioridad: Específico > Global
-            
-            cpu_limit = thresholds.get("cpu")
-            if cpu_limit is None and alert_cfg:
-                cpu_limit = alert_cfg.cpu_total_percent
-                
-            mem_limit = thresholds.get("memory")
-            if mem_limit is None and alert_cfg:
-                mem_limit = alert_cfg.memory_used_percent
-                
-            disk_limit = thresholds.get("disk")
-            if disk_limit is None and alert_cfg:
-                disk_limit = alert_cfg.disk_used_percent
-
-            # Datos completos para el correo
-            full_metrics = payload.model_dump()
-            current_time = time.time()
-            
-            # Check CPU
-            if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
-                key = (payload.server_id, "cpu")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
-                    print(f"[ALERT] Sending CPU alert for {srv.server_id}. Threshold: {cpu_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, cpu_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-            
-            # Check Memory
-            mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
-            if mem_limit and mem_limit > 0 and mem_percent >= mem_limit:
-                key = (payload.server_id, "memory")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
-                    print(f"[ALERT] Sending Memory alert for {srv.server_id}. Threshold: {mem_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "Memoria Alta", mem_percent, mem_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-
-            # Check Disk
-            if disk_limit and disk_limit > 0 and payload.disk.percent >= disk_limit:
-                key = (payload.server_id, "disk")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
-                    print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-
+            settings = get_notification_settings(sess)
+            if settings.email_enabled:
+                alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+                thresholds = _threshold_cache.get(payload.server_id)
+                if thresholds is None:
+                    t_db = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == payload.server_id)).scalar_one_or_none()
+                    if t_db:
+                        thresholds = {
+                            "cpu": t_db.cpu_threshold,
+                            "memory": t_db.memory_threshold,
+                            "disk": t_db.disk_threshold
+                        }
+                    else:
+                        thresholds = {}
+                    _threshold_cache[payload.server_id] = thresholds
+                cpu_limit = thresholds.get("cpu")
+                if cpu_limit is None and alert_cfg:
+                    cpu_limit = alert_cfg.cpu_total_percent
+                mem_limit = thresholds.get("memory")
+                if mem_limit is None and alert_cfg:
+                    mem_limit = alert_cfg.memory_used_percent
+                disk_limit = thresholds.get("disk")
+                if disk_limit is None and alert_cfg:
+                    disk_limit = alert_cfg.disk_used_percent
+                full_metrics = payload.model_dump()
+                current_time = time.time()
+                if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
+                    key = (payload.server_id, "cpu")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
+                        print(f"[ALERT] Sending CPU alert for {srv.server_id}. Threshold: {cpu_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, cpu_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
+                mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
+                if mem_limit and mem_limit > 0 and mem_percent >= mem_limit:
+                    key = (payload.server_id, "memory")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
+                        print(f"[ALERT] Sending Memory alert for {srv.server_id}. Threshold: {mem_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, mem_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
+                if disk_limit and disk_limit > 0 and payload.disk.percent >= disk_limit:
+                    key = (payload.server_id, "disk")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
+                        print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"Error checking alerts: {e}")
+        
+        # --- Service Monitoring Logic ---
+        try:
+            prev_cache = _cache.get(payload.server_id)
+            if prev_cache and len(prev_cache) > 0:
+                last_entry = prev_cache[-1]
+                last_services = {s["name"]: s for s in last_entry.get("services", [])}
+                curr_services = {s.name: s for s in payload.services} if payload.services else {}
+                
+                for name, curr_s in curr_services.items():
+                    prev_s = last_services.get(name)
+                    if prev_s and prev_s.get("status") != curr_s.status:
+                        # Status changed
+                        msg = f"El servicio '{curr_s.display_name or name}' cambió de estado: {prev_s.get('status')} -> {curr_s.status}"
+                        # Check for service alert recipients
+                        recipients, _ = get_alert_recipients(sess, srv, "service_status")
+                        
+                        print(f"[ALERT] Service status change detected for {srv.server_id}: {msg}")
+                        send_alert_email(
+                            server_id=payload.server_id, 
+                            alert_type="Cambio de Estado de Servicio", 
+                            current_value=0, 
+                            threshold=0, 
+                            extra_recipients=recipients,
+                            full_metrics=payload.model_dump(),
+                            custom_message=msg
+                        )
+        except Exception as e:
+            print(f"Error checking service alerts: {e}")
 
         # Actualizar caché en memoria
         try:
@@ -1044,6 +1961,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 "cpu": payload.cpu.model_dump(),
                 "disk": payload.disk.model_dump(),
                 "docker": payload.docker.model_dump(),
+                "services": [s.model_dump() for s in payload.services] if payload.services else [],
+                "network": payload.network.model_dump() if getattr(payload, "network", None) else None,
             }
             buf = _cache.get(payload.server_id)
             if not buf:
@@ -1081,6 +2000,7 @@ def metrics_history(server_id: Optional[str] = None, limit: int = 100, user: dic
                     "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
                     "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
                     "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
+                    "services": json.loads(r.services or "[]")
                 }
             data = [row_to_dict(r) for r in rows]
             if server_id:
@@ -1162,9 +2082,48 @@ def list_data_monitoring(
     environment: Optional[str] = None,
     app_name: Optional[str] = None,
     entity_id: Optional[str] = None,
-    user: dict = Depends(require_data_monitoring_access)
+    user: dict = Depends(get_current_user_from_token)
 ):
     with Session(engine) as sess:
+        db_user = sess.get(User, user["user_id"])
+        if not db_user:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        # Check permissions
+        has_permission = False
+        if db_user.is_admin:
+            has_permission = True
+        else:
+            # Check global flag
+            cfg = sess.execute(select(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == db_user.id)).scalar_one_or_none()
+            if cfg and cfg.enabled:
+                has_permission = True
+            
+            # Check granular server permission if entity_id provided
+            if not has_permission and entity_id:
+                srv = sess.execute(select(Server).where(Server.server_id == entity_id)).scalar_one_or_none()
+                if srv:
+                     link = sess.execute(select(UserServerLink).where(
+                         UserServerLink.user_id == db_user.id,
+                         UserServerLink.server_id == srv.id
+                     )).scalar_one_or_none()
+                     if link and link.postman_access_level in ('view', 'edit', 'admin'):
+                         has_permission = True
+
+        if not has_permission:
+            raise HTTPException(status_code=403, detail="No tienes permiso para ver estos datos")
+
+        # Audit Log
+        if entity_id:
+             sess.add(AuditLog(
+                 action="view_postman_data",
+                 target_type="server",
+                 target_id=entity_id,
+                 user_email=db_user.email,
+                 changes=json.dumps({"env": environment, "app": app_name})
+             ))
+             sess.commit()
+
         query = select(DataMonitoring).order_by(DataMonitoring.id.desc())
 
         if environment:
@@ -1218,6 +2177,113 @@ def export_data_monitoring(user: dict = Depends(require_data_monitoring_access))
         response = StreamingResponse(iter([output.getvalue()]), media_type="text/csv")
         response.headers["Content-Disposition"] = "attachment; filename=data_monitoring.csv"
         return response
+
+# --- Service Management ---
+
+@app.post("/api/servers/{server_id}/services/action", response_model=AgentCommandResponse)
+def execute_service_action(server_id: str, payload: ServiceActionSchema, user: dict = Depends(require_admin)):
+    """
+    Queue a command to start/stop/restart a service on the agent.
+    """
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        
+        # Validar comando
+        if payload.action not in ["start", "stop", "restart", "update"]:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        # Crear comando pendiente
+        command = AgentCommand(
+            server_id=server.server_id,
+            command=f"service_{payload.action}",
+            params=json.dumps({"service": payload.service}),
+            status="pending"
+        )
+        sess.add(command)
+        sess.commit()
+        sess.refresh(command)
+        return command
+
+@app.post("/api/servers/{server_id}/services/bulk-action", response_model=List[AgentCommandResponse])
+def execute_bulk_service_action(server_id: str, payload: BulkServiceActionSchema, user: dict = Depends(require_admin)):
+    """
+    Queue commands to start/stop/restart multiple services on the agent.
+    """
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        
+        # Validar comando
+        if payload.action not in ["start", "stop", "restart", "update"]:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        commands = []
+        for service_name in payload.services:
+            # Crear comando pendiente para cada servicio
+            command = AgentCommand(
+                server_id=server.server_id,
+                command=f"service_{payload.action}",
+                params=json.dumps({"service": service_name}),
+                status="pending"
+            )
+            sess.add(command)
+            commands.append(command)
+        
+        sess.commit()
+        # Refresh all commands to get their IDs
+        for cmd in commands:
+            sess.refresh(cmd)
+            
+        return commands
+
+@app.get("/api/servers/{server_id}/commands/pending", response_model=List[AgentCommandResponse])
+def get_pending_commands(server_id: str, x_auth_token: Optional[str] = Header(None)):
+    """
+    Endpoint for the AGENT to poll pending commands.
+    """
+    if not x_auth_token:
+        raise HTTPException(status_code=401, detail="Missing auth token")
+        
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server or server.token != x_auth_token:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+            
+        commands = sess.execute(
+            select(AgentCommand)
+            .where(AgentCommand.server_id == server_id)
+            .where(AgentCommand.status == "pending")
+            .order_by(AgentCommand.created_at.asc())
+        ).scalars().all()
+        
+        return commands
+
+@app.post("/api/servers/{server_id}/commands/{command_id}/result")
+def update_command_result(server_id: str, command_id: int, result: dict, x_auth_token: Optional[str] = Header(None)):
+    """
+    Endpoint for the AGENT to report command execution result.
+    """
+    if not x_auth_token:
+        raise HTTPException(status_code=401, detail="Missing auth token")
+        
+    with Session(engine) as sess:
+        server = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not server or server.token != x_auth_token:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+            
+        command = sess.get(AgentCommand, command_id)
+        if not command or command.server_id != server_id:
+            raise HTTPException(status_code=404, detail="Command not found")
+            
+        command.status = result.get("status", "executed")
+        command.result = json.dumps(result.get("output", {}))
+        command.executed_at = func.now()
+        sess.commit()
+        
+    return {"status": "ok"}
 
 # --- Servir Frontend con Cache Busting (debe ir al final) ---
 import re

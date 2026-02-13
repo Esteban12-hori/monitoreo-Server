@@ -45,13 +45,137 @@ def read_disk():
     }
 
 
+def read_network():
+    try:
+        counters = psutil.net_io_counters(pernic=False)
+        return {
+            "bytes_sent": float(counters.bytes_sent),
+            "bytes_recv": float(counters.bytes_recv),
+            "packets_sent": float(getattr(counters, "packets_sent", 0.0)),
+            "packets_recv": float(getattr(counters, "packets_recv", 0.0)),
+        }
+    except Exception:
+        return {
+            "bytes_sent": 0.0,
+            "bytes_recv": 0.0,
+            "packets_sent": 0.0,
+            "packets_recv": 0.0,
+        }
+
 def read_docker():
     try:
-        out = subprocess.check_output(["docker", "ps", "--format", "{{.Names}}"], text=True)
-        names = [n for n in out.strip().split("\n") if n]
-        return {"running_containers": len(names), "containers": [{"name": n} for n in names]}
+        # 1. Obtener metadatos de contenedores (ID, Name, Image, Status)
+        # Usamos docker ps para ver los activos.
+        ps_out = subprocess.check_output(["docker", "ps", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}"], text=True)
+        containers_map = {}
+        for line in ps_out.strip().split("\n"):
+            if not line: continue
+            parts = line.split("|")
+            if len(parts) >= 4:
+                cid = parts[0]
+                containers_map[cid] = {
+                    "id": cid,
+                    "name": parts[1],
+                    "image": parts[2],
+                    "status": parts[3],
+                    "cpu": 0.0,
+                    "mem": 0.0
+                }
+
+        # 2. Obtener estadísticas (ID, CPU, Mem)
+        stats_out = subprocess.check_output(["docker", "stats", "--no-stream", "--format", "{{.ID}}|{{.CPUPerc}}|{{.MemPerc}}"], text=True)
+        for line in stats_out.strip().split("\n"):
+            if not line: continue
+            parts = line.split("|")
+            if len(parts) >= 3:
+                cid = parts[0]
+                # A veces stats devuelve ID largo o corto, docker ps devuelve corto por defecto. 
+                # Tratamos de coincidir.
+                target = containers_map.get(cid)
+                if not target:
+                    # Intento de búsqueda parcial si los IDs difieren en longitud
+                    for k in containers_map:
+                        if k.startswith(cid) or cid.startswith(k):
+                            target = containers_map[k]
+                            break
+                
+                if target:
+                    try:
+                        target["cpu"] = float(parts[1].replace("%", ""))
+                    except:
+                        pass
+                    try:
+                        target["mem"] = float(parts[2].replace("%", ""))
+                    except:
+                        pass
+
+        container_list = list(containers_map.values())
+        return {"running_containers": len(container_list), "containers": container_list}
     except Exception:
-        return {"running_containers": 0, "containers": []}
+        # Fallback simple
+        try:
+            out = subprocess.check_output(["docker", "ps", "--format", "{{.Names}}"], text=True)
+            names = [n for n in out.strip().split("\n") if n]
+            return {"running_containers": len(names), "containers": [{"name": n, "status": "running"} for n in names]}
+        except Exception:
+            return {"running_containers": 0, "containers": []}
+
+
+def read_services():
+    services = []
+    system = platform.system().lower()
+    try:
+        if system == "windows":
+            # Usar PowerShell para obtener servicios (top 100)
+            # Quitamos el filtro de Status para ver también los detenidos
+            cmd = ["powershell", "-Command", "Get-Service | Select-Object -First 100 Name, DisplayName, Status, RequiredServices | ConvertTo-Json"]
+            out = subprocess.check_output(cmd, text=True)
+            data = json.loads(out)
+            if isinstance(data, dict): data = [data]
+            for s in data:
+                status_val = "running" if s.get("Status") == 4 else "stopped"
+                raw_status = str(s.get("Status", "")).lower()
+                if "run" in raw_status or raw_status == "4":
+                    status_val = "running"
+                else:
+                    status_val = "stopped"
+                
+                reqs = s.get("RequiredServices", [])
+                deps = []
+                if isinstance(reqs, list):
+                    deps = [r.get("Name") for r in reqs if isinstance(r, dict)]
+                elif isinstance(reqs, dict):
+                    deps = [reqs.get("Name")]
+                    
+                services.append({
+                    "name": s.get("Name", ""),
+                    "display_name": s.get("DisplayName", ""),
+                    "status": status_val,
+                    "dependencies": deps
+                })
+        elif system == "linux":
+            # Systemctl list-units --all
+            cmd = ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain", "--no-legend"]
+            out = subprocess.check_output(cmd, text=True)
+            count = 0
+            for line in out.split("\n"):
+                if count >= 100: break
+                parts = line.split()
+                if len(parts) >= 3:
+                    name = parts[0]
+                    # parts[2] is active/inactive, parts[3] is substate (running/dead)
+                    # Example: nginx.service loaded active running A high performance web server
+                    status_val = "running" if parts[3] == "running" else "stopped"
+                    services.append({
+                        "name": name,
+                        "display_name": "", 
+                        "status": status_val,
+                        "version": None # Placeholder
+                    })
+                    count += 1
+    except Exception:
+        pass
+    return services
 
 
 def payload(server_id: str):
@@ -61,35 +185,124 @@ def payload(server_id: str):
         "cpu": read_cpu(),
         "disk": read_disk(),
         "docker": read_docker(),
+        "services": read_services(),
+        "network": read_network(),
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 
+def execute_command(command: dict):
+    cmd_type = command.get("command")
+    params = json.loads(command.get("params") or "{}")
+    service_name = params.get("service")
+    
+    result = {"status": "executed", "output": {}}
+    
+    try:
+        if cmd_type.startswith("service_"):
+            action = cmd_type.split("_")[1] # start, stop, restart, update
+            if platform.system().lower() == "windows":
+                # Map 'update' to 'Restart-Service' (force) or just standard actions
+                ps_action = {
+                    "start": "Start-Service", 
+                    "stop": "Stop-Service", 
+                    "restart": "Restart-Service",
+                    "update": "Restart-Service" 
+                }.get(action)
+                
+                if ps_action:
+                    cmd_str = f"{ps_action} -Name '{service_name}'"
+                    if action == "update":
+                        cmd_str += " -Force"
+                    subprocess.check_call(["powershell", "-Command", cmd_str])
+                    result["output"] = {"message": f"Service {service_name} {action}ed successfully"}
+            elif platform.system().lower() == "linux":
+                sys_action = action
+                if action == "update":
+                    sys_action = "reload-or-restart"
+                
+                subprocess.check_call(["sudo", "systemctl", sys_action, service_name])
+                result["output"] = {"message": f"Service {service_name} {action}ed successfully"}
+        else:
+             result["status"] = "failed"
+             result["output"] = {"error": f"Unknown command {cmd_type}"}
+             
+    except Exception as e:
+        result["status"] = "failed"
+        result["output"] = {"error": str(e)}
+        
+    return result
+
+def check_commands(server_url, server_id, token, verify_tls):
+    try:
+        resp = requests.get(
+            f"{server_url}/api/servers/{server_id}/commands/pending",
+            headers={"X-Auth-Token": token},
+            timeout=10,
+            verify=verify_tls if verify_tls else True
+        )
+        if resp.status_code == 200:
+            commands = resp.json()
+            for cmd in commands:
+                logging.info(f"Executing command: {cmd['command']}")
+                res = execute_command(cmd)
+                
+                # Report result
+                requests.post(
+                    f"{server_url}/api/servers/{server_id}/commands/{cmd['id']}/result",
+                    json=res,
+                    headers={"X-Auth-Token": token},
+                    timeout=10,
+                    verify=verify_tls if verify_tls else True
+                )
+    except Exception as e:
+        logging.error(f"Error checking commands: {e}")
+
+
 def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls: str):
+    last_metrics_time = 0
+    metrics_interval = interval
+    command_interval = 10 # Check every 10 seconds
+    last_command_time = 0
+
+    logging.info(f"Iniciando bucle de agente. Intervalo métricas: {metrics_interval}s, Comandos: {command_interval}s")
+
     while True:
-        data = payload(server_id)
-        try:
-            resp = requests.post(
-                f"{server_url}/api/metrics",
-                json=data,
-                headers={"X-Auth-Token": token},
-                timeout=10,
-                verify=verify_tls if verify_tls else True,
-            )
-            if resp.status_code == 200:
-                try:
-                    rj = resp.json()
-                    new_interval = rj.get("report_interval")
-                    if new_interval and isinstance(new_interval, int) and new_interval != interval:
-                        logging.info("Actualizando intervalo de %ss a %ss", interval, new_interval)
-                        interval = new_interval
-                except Exception:
-                    pass
-            else:
-                logging.error("Error enviando métricas %s %s", resp.status_code, resp.text)
-        except Exception as e:
-            logging.exception("Excepción enviando métricas: %s", e)
-        time.sleep(interval)
+        now = time.time()
+        
+        # Check Commands
+        if now - last_command_time >= command_interval:
+            check_commands(server_url, server_id, token, verify_tls)
+            last_command_time = now
+
+        # Send Metrics
+        if now - last_metrics_time >= metrics_interval:
+            data = payload(server_id)
+            try:
+                resp = requests.post(
+                    f"{server_url}/api/metrics",
+                    json=data,
+                    headers={"X-Auth-Token": token},
+                    timeout=10,
+                    verify=verify_tls if verify_tls else True,
+                )
+                if resp.status_code == 200:
+                    try:
+                        rj = resp.json()
+                        new_interval = rj.get("report_interval")
+                        if new_interval and isinstance(new_interval, int) and new_interval != metrics_interval:
+                            logging.info("Actualizando intervalo de %ss a %ss", metrics_interval, new_interval)
+                            metrics_interval = new_interval
+                    except Exception:
+                        pass
+                else:
+                    logging.error("Error enviando métricas %s %s", resp.status_code, resp.text)
+            except Exception as e:
+                logging.exception("Excepción enviando métricas: %s", e)
+            
+            last_metrics_time = now
+            
+        time.sleep(1)
 
 
 def load_config(path: Path) -> dict:

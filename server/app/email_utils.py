@@ -12,24 +12,93 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
-def send_alert_email(server_id: str, alert_type: str, current_value: float, threshold: float, extra_recipients: list = None, full_metrics: dict = None):
+
+def _has_connectivity() -> bool:
+    try:
+        resp = requests.get("https://api.mailjet.com", timeout=3)
+        return resp.status_code < 500
+    except Exception:
+        logger.warning("Sin conectividad a internet; sistema en modo offline. No se enviará correo.")
+        return False
+
+
+def send_alert_email(server_id: str, alert_type: str, current_value: float, threshold: float, extra_recipients: list = None, full_metrics: dict = None, custom_message: str = None):
     """
     Envía un correo de alerta usando Mailjet API v3.1.
     """
     if not EMAIL_API_KEY or not EMAIL_API_SECRET:
         logger.warning("Credenciales de email no configuradas. No se enviará alerta.")
         return
+    if not _has_connectivity():
+        return
 
-    subject = f"{EMAIL_SUBJECT_PREFIX} 🚨 {alert_type} en {server_id} ({current_value}%)"
-    text_content = (
-        f"🚨 ALERTA DE MONITOREO 🚨\n\n"
-        f"Servidor: {server_id}\n"
-        f"Problema: {alert_type}\n"
-        f"Valor Actual: {current_value}%\n"
-        f"Umbral Máximo: {threshold}%\n\n"
-        f"Por favor verifique el servidor inmediatamente."
-    )
-    
+    subject = f"{EMAIL_SUBJECT_PREFIX} 🚨 {alert_type} en {server_id}"
+    if not custom_message:
+        subject += f" ({current_value}%)"
+
+    if custom_message:
+        text_content = (
+            f"🚨 ALERTA DE MONITOREO 🚨\n\n"
+            f"Servidor: {server_id}\n"
+            f"Tipo: {alert_type}\n"
+            f"Detalle: {custom_message}\n\n"
+            f"Por favor verifique el servidor inmediatamente."
+        )
+        html_content = f"""
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+            <div style="background-color: #d32f2f; padding: 20px; text-align: center;">
+                <h1 style="color: white; margin: 0; font-size: 24px; font-weight: 600;">🚨 ALERTA DE MONITOREO</h1>
+            </div>
+            
+            <div style="padding: 30px; background-color: #ffffff;">
+                <div style="background-color: #fff8f8; border-left: 4px solid #d32f2f; padding: 15px; margin-bottom: 25px; border-radius: 4px;">
+                    <p style="margin: 0; color: #d32f2f; font-weight: bold; font-size: 18px;">{alert_type}</p>
+                    <p style="margin: 5px 0 0; color: #555;">{custom_message}</p>
+                </div>
+                
+                <table style="width: 100%; margin-bottom: 20px;">
+                    <tr>
+                        <td style="padding: 8px 0; color: #666; width: 140px;"><strong>Servidor:</strong></td>
+                        <td style="padding: 8px 0; color: #333; font-weight: 500;">{server_id}</td>
+                    </tr>
+                </table>
+        """
+    else:
+        text_content = (
+            f"🚨 ALERTA DE MONITOREO 🚨\n\n"
+            f"Servidor: {server_id}\n"
+            f"Problema: {alert_type}\n"
+            f"Valor Actual: {current_value}%\n"
+            f"Umbral Máximo: {threshold}%\n\n"
+            f"Por favor verifique el servidor inmediatamente."
+        )
+        html_content = f"""
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+            <div style="background-color: #d32f2f; padding: 20px; text-align: center;">
+                <h1 style="color: white; margin: 0; font-size: 24px; font-weight: 600;">🚨 ALERTA DE MONITOREO</h1>
+            </div>
+            
+            <div style="padding: 30px; background-color: #ffffff;">
+                <div style="background-color: #fff8f8; border-left: 4px solid #d32f2f; padding: 15px; margin-bottom: 25px; border-radius: 4px;">
+                    <p style="margin: 0; color: #d32f2f; font-weight: bold; font-size: 18px;">{alert_type}</p>
+                    <p style="margin: 5px 0 0; color: #555;">El valor actual ha superado el umbral permitido.</p>
+                </div>
+                
+                <table style="width: 100%; margin-bottom: 20px;">
+                    <tr>
+                        <td style="padding: 8px 0; color: #666; width: 140px;"><strong>Servidor:</strong></td>
+                        <td style="padding: 8px 0; color: #333; font-weight: 500;">{server_id}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #666;"><strong>Valor Actual:</strong></td>
+                        <td style="padding: 8px 0; color: #d32f2f; font-weight: bold; font-size: 16px;">{current_value}%</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #666;"><strong>Umbral Máximo:</strong></td>
+                        <td style="padding: 8px 0; color: #333;">{threshold}%</td>
+                    </tr>
+                </table>
+        """
     metrics_html = ""
     if full_metrics:
         try:
@@ -37,13 +106,11 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
             disk = full_metrics.get('disk', {})
             cpu = full_metrics.get('cpu', {})
             
-            # Memoria (MB)
             mem_total = mem.get('total', 0)
             mem_used = mem.get('used', 0)
             mem_free = mem.get('free', 0)
             mem_pct = round((mem_used / mem_total * 100), 1) if mem_total > 0 else 0
             
-            # Disco (GB)
             disk_total = disk.get('total', 0)
             disk_used = disk.get('used', 0)
             disk_free = disk.get('free', 0)
@@ -138,6 +205,15 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
         r = receiver.strip()
         if r:
             to_recipients.append({"Email": r, "Name": "Admin"})
+            
+    if extra_recipients:
+        for r in extra_recipients:
+             # extra_recipients might be list of strings or dicts depending on caller
+             # Assuming list of strings based on AlertRule logic
+             if isinstance(r, str):
+                 to_recipients.append({"Email": r, "Name": "Recipient"})
+             elif isinstance(r, dict) and "Email" in r:
+                 to_recipients.append(r)
 
     # Eliminar duplicados
     unique = {}

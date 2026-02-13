@@ -1,0 +1,235 @@
+{
+	"info": {
+		"_postman_id": "b3e8e8f1-1234-5678-9abc-def012345678",
+		"name": "Monitor Integral API",
+		"description": "Colección de endpoints para el sistema de monitoreo de servidores ServPulse.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Login",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"admin@example.com\",\n    \"password\": \"admin123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"login"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Servers",
+			"item": [
+				{
+					"name": "List Servers",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Dashboard-Token",
+								"value": "{{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/servers",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"servers"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register Server",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"server_id\": \"server-01\",\n    \"hostname\": \"prod-db-01\",\n    \"ip_address\": \"192.168.1.10\",\n    \"os_info\": \"Linux Ubuntu 22.04\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/register_server",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"register_server"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Metrics",
+			"item": [
+				{
+					"name": "Ingest Metrics",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"server_id\": \"server-01\",\n    \"cpu\": {\n        \"total\": 45.5,\n        \"per_core\": [40, 50, 42, 50]\n    },\n    \"memory\": {\n        \"total\": 16000000000,\n        \"available\": 8000000000,\n        \"used\": 8000000000,\n        \"percent\": 50.0\n    },\n    \"disk\": {\n        \"total\": 500000000000,\n        \"used\": 250000000000,\n        \"free\": 250000000000,\n        \"percent\": 50.0\n    },\n    \"network\": {\n        \"bytes_sent\": 102400,\n        \"bytes_recv\": 204800\n    },\n    \"timestamp\": 1678886400.0\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/metrics",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"metrics"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get History",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Dashboard-Token",
+								"value": "{{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/metrics/history?server_id=server-01&limit=50",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"metrics",
+								"history"
+							],
+							"query": [
+								{
+									"key": "server_id",
+									"value": "server-01"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Admin",
+			"item": [
+				{
+					"name": "List Users",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Dashboard-Token",
+								"value": "{{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/admin/users",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"admin",
+								"users"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List Groups",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Dashboard-Token",
+								"value": "{{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/admin/groups",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"admin",
+								"groups"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

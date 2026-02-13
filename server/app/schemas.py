@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
@@ -33,12 +33,55 @@ class DockerSchema(BaseModel):
     containers: List[DockerContainerSchema] = []
 
 
+class NetworkSchema(BaseModel):
+    bytes_sent: float
+    bytes_recv: float
+    packets_sent: Optional[float] = None
+    packets_recv: Optional[float] = None
+
+class ServiceSchema(BaseModel):
+    name: str
+    display_name: Optional[str] = ""
+    status: str
+    dependencies: Optional[List[str]] = []
+    version: Optional[str] = None
+
+
+class ServiceActionSchema(BaseModel):
+    service: str
+    action: str # start, stop, restart, update
+
+
+class BulkServiceActionSchema(BaseModel):
+    services: List[str]
+    action: str # start, stop, restart, update
+
+
+class ServiceGroupActionSchema(BaseModel):
+    group_name: str
+    service: str
+    action: str # start, stop, restart
+
+
+class AgentCommandResponse(BaseModel):
+    id: int
+    command: str
+    params: Optional[str]
+    status: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
 class MetricsIngestSchema(BaseModel):
     server_id: str
     memory: MemorySchema
     cpu: CpuSchema
     disk: DiskSchema
     docker: DockerSchema
+    services: Optional[List[ServiceSchema]] = []
+    network: Optional[NetworkSchema] = None
     timestamp: Optional[str] = None
 
 
@@ -78,6 +121,7 @@ class UserResponseSchema(BaseModel):
     is_admin: bool
     receive_alerts: bool
     can_view_data_monitoring: bool = False
+    sidebar_config: Optional[str] = None
     created_at: Optional[datetime]
 
     class Config:
@@ -110,6 +154,7 @@ class DataMonitoringResponseSchema(DataMonitoringSchema):
 class ServerAssignmentItem(BaseModel):
     server_id: str
     receive_alerts: bool = True
+    postman_access_level: str = "none" # none, view, edit, admin
 
 class ServerAssignmentSchema(BaseModel):
     assignments: List[ServerAssignmentItem]
@@ -117,6 +162,7 @@ class ServerAssignmentSchema(BaseModel):
 class UserServerAssignmentResponse(BaseModel):
     server_id: str
     receive_alerts: bool
+    postman_access_level: str
 
 class ChangePasswordSchema(BaseModel):
     current_password: str
@@ -147,10 +193,11 @@ class AlertRecipientCreateSchema(BaseModel):
 
 
 class AlertRuleBase(BaseModel):
-    alert_type: str = Field(..., pattern="^(cpu|memory|disk|offline)$")
+    alert_type: str = Field(..., pattern="^(cpu|memory|disk|offline|service_status)$")
     server_scope: str = Field(..., pattern="^(global|server|group)$")
     target_id: Optional[str] = None
     emails: List[EmailStr]
+    extra_emails: Optional[List[EmailStr]] = []
 
 class AlertRuleCreate(AlertRuleBase):
     pass
@@ -164,7 +211,6 @@ class AlertRuleResponse(AlertRuleBase):
 
 class ServerUpdateGroupSchema(BaseModel):
     group_name: Optional[str]
-
 
 class ServerGroupCreateSchema(BaseModel):
     name: str = Field(..., min_length=1)
@@ -208,3 +254,19 @@ class AuditLogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SidebarConfigUpdateSchema(BaseModel):
+    config: Dict[str, Any]
+
+
+class NotificationSettingsResponse(BaseModel):
+    email_enabled: bool
+    admin_only: bool
+    offline_alerts_enabled: bool
+    environment: str
+
+
+class NotificationSettingsUpdate(BaseModel):
+    email_enabled: Optional[bool] = None
+    admin_only: Optional[bool] = None
+    offline_alerts_enabled: Optional[bool] = None
