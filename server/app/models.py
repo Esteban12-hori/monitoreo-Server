@@ -93,8 +93,16 @@ class AlertRecipient(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class NotificationSettings(Base):
+    __tablename__ = "notification_settings"
+    id = Column(Integer, primary_key=True)
+    email_enabled = Column(Boolean, default=True)
+    admin_only = Column(Boolean, default=True)
+    offline_alerts_enabled = Column(Boolean, default=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-class User(Base):
+
+
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, index=True, nullable=False)

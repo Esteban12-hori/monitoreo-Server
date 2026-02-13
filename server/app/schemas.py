@@ -257,3 +257,16 @@ class AuditLogResponse(BaseModel):
 
 class SidebarConfigUpdateSchema(BaseModel):
     config: Dict[str, Any]
+
+
+class NotificationSettingsResponse(BaseModel):
+    email_enabled: bool
+    admin_only: bool
+    offline_alerts_enabled: bool
+    environment: str
+
+
+class NotificationSettingsUpdate(BaseModel):
+    email_enabled: Optional[bool] = None
+    admin_only: Optional[bool] = None
+    offline_alerts_enabled: Optional[bool] = None

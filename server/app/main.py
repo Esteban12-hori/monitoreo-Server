@@ -46,8 +46,10 @@ from .config import (
     OFFLINE_CHECK_INTERVAL,
     OFFLINE_MULTIPLIER,
     OFFLINE_MIN_SECONDS,
+    APP_ENV,
+    IS_PRODUCTION,
 )
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand, NotificationSettings
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -57,7 +59,8 @@ from .schemas import (
     ServerDataMonitoringUpdateSchema,
     UserUpdateSchema, UserServerAssignmentResponse, DataMonitoringSchema, DataMonitoringResponseSchema,
     ServerGroupSchema, ServerGroupCreateSchema, ServiceSchema, AgentCommandResponse, ServiceActionSchema,
-    BulkServiceActionSchema, SidebarConfigUpdateSchema
+    BulkServiceActionSchema, SidebarConfigUpdateSchema,
+    NotificationSettingsResponse, NotificationSettingsUpdate,
 )
 from .email_utils import send_alert_email
 import time
@@ -283,31 +286,30 @@ def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
         }
 
 
-def _wa_compute_uptime(server_id: str) -> Optional[str]:
-    with Session(engine) as sess:
-        first = (
-            sess.execute(
-                select(Metric)
-                .where(Metric.server_id == server_id)
-                .order_by(Metric.id.asc())
-                .limit(1)
-            )
-            .scalars()
-            .first()
+def _compute_uptime_for_server(sess: Session, server_id: str) -> Optional[str]:
+    first = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.asc())
+            .limit(1)
         )
-        last = (
-            sess.execute(
-                select(Metric)
-                .where(Metric.server_id == server_id)
-                .order_by(Metric.id.desc())
-                .limit(1)
-            )
-            .scalars()
-            .first()
+        .scalars()
+        .first()
+    )
+    last = (
+        sess.execute(
+            select(Metric)
+            .where(Metric.server_id == server_id)
+            .order_by(Metric.id.desc())
+            .limit(1)
         )
-        if not first or not last:
-            return None
-        delta = (last.ts - first.ts).total_seconds()
+        .scalars()
+        .first()
+    )
+    if not first or not last:
+        return None
+    delta = (last.ts - first.ts).total_seconds()
     if delta <= 0:
         return None
     days = int(delta // 86400)
@@ -322,6 +324,10 @@ def _wa_compute_uptime(server_id: str) -> Optional[str]:
         parts.append(f"{minutes}m")
     return " ".join(parts)
 
+
+def _wa_compute_uptime(server_id: str) -> Optional[str]:
+    with Session(engine) as sess:
+        return _compute_uptime_for_server(sess, server_id)
 
 def _wa_build_alerts_summary(server_id: str, metrics: Dict[str, Any]) -> List[str]:
     alerts: List[str] = []
@@ -872,6 +878,32 @@ def ensure_server_group_column():
                 print(f"Error migrando group_name: {e}")
                 sess.rollback()
 
+def ensure_notification_settings():
+    with Session(engine) as sess:
+        existing = sess.execute(select(NotificationSettings)).scalars().first()
+        if not existing:
+            cfg = NotificationSettings(
+                email_enabled=True,
+                admin_only=True,
+                offline_alerts_enabled=not IS_PRODUCTION,
+            )
+            sess.add(cfg)
+            sess.commit()
+
+
+def get_notification_settings(sess: Session) -> NotificationSettings:
+    cfg = sess.execute(select(NotificationSettings)).scalars().first()
+    if not cfg:
+        cfg = NotificationSettings(
+            email_enabled=True,
+            admin_only=True,
+            offline_alerts_enabled=not IS_PRODUCTION,
+        )
+        sess.add(cfg)
+        sess.commit()
+        sess.refresh(cfg)
+    return cfg
+
 def ensure_admin_assignments():
     """Asegura que todos los administradores tengan asignados todos los servidores (para alertas)."""
     with Session(engine) as sess:
@@ -928,9 +960,11 @@ def startup():
         ensure_sidebar_config_column()
         ensure_environment_column()
         ensure_server_group_column()
+        ensure_notification_settings()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
+        asyncio.create_task(_offline_monitor_loop())
     except Exception as e:
         print(f"Advertencia en startup: {e}")
 
@@ -946,6 +980,51 @@ _threshold_cache: dict[str, dict] = {}
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
 ALERT_COOLDOWN = 3600
+
+
+async def _offline_monitor_loop():
+    while True:
+        await asyncio.sleep(OFFLINE_CHECK_INTERVAL)
+        try:
+            with Session(engine) as sess:
+                settings = get_notification_settings(sess)
+                if not settings.email_enabled or not settings.offline_alerts_enabled:
+                    continue
+                servers = sess.execute(select(Server)).scalars().all()
+                now = datetime.utcnow()
+                for srv in servers:
+                    status = _compute_server_status(sess, srv.server_id)
+                    if status["status"] != "offline":
+                        continue
+                    key = (srv.server_id, "offline")
+                    last_sent = _alert_state.get(key, 0)
+                    current_time = time.time()
+                    if current_time - last_sent <= ALERT_COOLDOWN:
+                        continue
+                    recipients, applied_rules = get_alert_recipients(sess, srv, "offline")
+                    if not recipients:
+                        continue
+                    last_seen = status["last_seen"]
+                    if last_seen:
+                        delta = (now - last_seen).total_seconds()
+                        msg = f"El servidor no reporta métricas desde {last_seen} ({int(delta)} segundos)."
+                        current_value = float(delta)
+                    else:
+                        msg = "El servidor no ha reportado métricas todavía."
+                        current_value = 0.0
+                    print(f"[ALERT] Sending Offline alert for {srv.server_id}. Applied rules: {applied_rules}")
+                    send_alert_email(
+                        server_id=srv.server_id,
+                        alert_type="Servidor Offline",
+                        current_value=current_value,
+                        threshold=float(_offline_threshold_seconds),
+                        extra_recipients=recipients,
+                        full_metrics={},
+                        custom_message=msg,
+                    )
+                    _alert_state[key] = current_time
+        except Exception as e:
+            print(f"Error in offline monitor loop: {e}")
 
 
 def create_jwt_for_user(user_id: int) -> str:
@@ -1297,10 +1376,10 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         results = []
         
         if db_user and not db_user.is_admin:
-            # User sees only assigned servers
             for link in db_user.server_links:
                 if link.server:
                     status = _compute_server_status(sess, link.server.server_id)
+                    uptime = _compute_uptime_for_server(sess, link.server.server_id) if status["status"] == "online" else None
                     results.append({
                         "server_id": link.server.server_id,
                         "created_at": str(link.server.created_at),
@@ -1309,13 +1388,14 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
                         "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
                         "postman_access_level": link.postman_access_level,
                         "status": status["status"],
-                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None
+                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                        "uptime": uptime,
                     })
         else:
-            # Admin sees all servers
             servers = sess.execute(select(Server)).scalars().all()
             for s in servers:
                 status = _compute_server_status(sess, s.server_id)
+                uptime = _compute_uptime_for_server(sess, s.server_id) if status["status"] == "online" else None
                 results.append({
                     "server_id": s.server_id,
                     "created_at": str(s.created_at),
@@ -1324,7 +1404,8 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
                     "data_monitoring_enabled": cfg_map.get(s.server_id, False),
                     "postman_access_level": "admin",
                     "status": status["status"],
-                    "last_seen": str(status["last_seen"]) if status["last_seen"] else None
+                    "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                    "uptime": uptime,
                 })
                 
         return results
@@ -1382,7 +1463,7 @@ def list_alert_recipients(user: dict = Depends(require_admin)):
     return recipients
 
 def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
-    # 1. Alert Rules
+    settings = get_notification_settings(sess)
     rules = sess.execute(select(AlertRule).where(AlertRule.alert_type == alert_type)).scalars().all()
     recipients = []
     applied_rules = []
@@ -1412,14 +1493,14 @@ def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
             except:
                 pass
                 
-    # 3. Assigned Users
-    # srv is a Server object, which has 'user_links' relationship
     if srv.user_links:
         for link in srv.user_links:
-            # Check link specific flag (defaults to True).
-            # We assume explicit assignment implies permission unless turned off.
             if link.receive_alerts and link.user.email:
                 recipients.append(link.user.email)
+
+    if settings.admin_only:
+        admins = sess.execute(select(User).where(User.is_admin == True)).scalars().all()
+        recipients = [u.email for u in admins if u.email]
 
     return list(set(recipients)), applied_rules
 
@@ -1451,6 +1532,51 @@ def delete_alert_recipient(recipient_id: int, user: dict = Depends(require_admin
         return {"status": "deleted"}
 
 
+@app.get("/api/admin/notification-settings", response_model=NotificationSettingsResponse)
+def get_notification_settings_api(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        cfg = get_notification_settings(sess)
+        return NotificationSettingsResponse(
+            email_enabled=cfg.email_enabled,
+            admin_only=cfg.admin_only,
+            offline_alerts_enabled=cfg.offline_alerts_enabled,
+            environment=APP_ENV,
+        )
+
+
+@app.post("/api/admin/notification-settings", response_model=NotificationSettingsResponse)
+def update_notification_settings_api(payload: NotificationSettingsUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        cfg = get_notification_settings(sess)
+        changes = {}
+        if payload.email_enabled is not None and payload.email_enabled != cfg.email_enabled:
+            changes["email_enabled"] = {"old": cfg.email_enabled, "new": payload.email_enabled}
+            cfg.email_enabled = payload.email_enabled
+        if payload.admin_only is not None and payload.admin_only != cfg.admin_only:
+            changes["admin_only"] = {"old": cfg.admin_only, "new": payload.admin_only}
+            cfg.admin_only = payload.admin_only
+        if payload.offline_alerts_enabled is not None and payload.offline_alerts_enabled != cfg.offline_alerts_enabled:
+            changes["offline_alerts_enabled"] = {"old": cfg.offline_alerts_enabled, "new": payload.offline_alerts_enabled}
+            cfg.offline_alerts_enabled = payload.offline_alerts_enabled
+        if changes:
+            log = AuditLog(
+                action="update_notification_settings",
+                target_type="notification_settings",
+                target_id=str(cfg.id),
+                changes=json.dumps(changes),
+                user_email=user.get("email"),
+            )
+            sess.add(log)
+        sess.commit()
+        sess.refresh(cfg)
+        return NotificationSettingsResponse(
+            email_enabled=cfg.email_enabled,
+            admin_only=cfg.admin_only,
+            offline_alerts_enabled=cfg.offline_alerts_enabled,
+            environment=APP_ENV,
+        )
+
+
 @app.post("/api/admin/test-email")
 def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
     """
@@ -1458,7 +1584,10 @@ def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require
     Envía un correo de prueba al destinatario especificado.
     """
     try:
-        # Usamos send_alert_email con datos simulados
+        with Session(engine) as sess:
+            settings = get_notification_settings(sess)
+            if not settings.email_enabled:
+                raise HTTPException(status_code=400, detail="El envío de correos está desactivado")
         send_alert_email(
             server_id="TEST-SERVER",
             alert_type="PRUEBA DE CORREO",
@@ -1468,6 +1597,8 @@ def test_email(payload: AlertRecipientCreateSchema, user: dict = Depends(require
             full_metrics={}
         )
         return {"status": "sent", "message": f"Correo de prueba enviado a {payload.email}"}
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1735,76 +1866,58 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
         sess.add(m)
         sess.commit()
 
-        # Verificar Alertas
         try:
-            # Cargar configuración de alertas global
-            alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
-            
-            # Cargar umbrales específicos (con caché)
-            thresholds = _threshold_cache.get(payload.server_id)
-            if thresholds is None:
-                # Si no está en caché, buscar en DB
-                t_db = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == payload.server_id)).scalar_one_or_none()
-                if t_db:
-                    thresholds = {
-                        "cpu": t_db.cpu_threshold,
-                        "memory": t_db.memory_threshold,
-                        "disk": t_db.disk_threshold
-                    }
-                else:
-                    thresholds = {}
-                _threshold_cache[payload.server_id] = thresholds
-            
-            # Definir límites efectivos (Global vs Específico)
-            # Prioridad: Específico > Global
-            
-            cpu_limit = thresholds.get("cpu")
-            if cpu_limit is None and alert_cfg:
-                cpu_limit = alert_cfg.cpu_total_percent
-                
-            mem_limit = thresholds.get("memory")
-            if mem_limit is None and alert_cfg:
-                mem_limit = alert_cfg.memory_used_percent
-                
-            disk_limit = thresholds.get("disk")
-            if disk_limit is None and alert_cfg:
-                disk_limit = alert_cfg.disk_used_percent
-
-            # Datos completos para el correo
-            full_metrics = payload.model_dump()
-            current_time = time.time()
-            
-            # Check CPU
-            if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
-                key = (payload.server_id, "cpu")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
-                    print(f"[ALERT] Sending CPU alert for {srv.server_id}. Threshold: {cpu_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, cpu_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-            
-            # Check Memory
-            mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
-            if mem_limit and mem_limit > 0 and mem_percent >= mem_limit:
-                key = (payload.server_id, "memory")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
-                    print(f"[ALERT] Sending Memory alert for {srv.server_id}. Threshold: {mem_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "Memoria Alta", mem_percent, mem_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-
-            # Check Disk
-            if disk_limit and disk_limit > 0 and payload.disk.percent >= disk_limit:
-                key = (payload.server_id, "disk")
-                last_sent = _alert_state.get(key, 0)
-                if current_time - last_sent > ALERT_COOLDOWN:
-                    recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
-                    print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
-                    send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
-                    _alert_state[key] = current_time
-
+            settings = get_notification_settings(sess)
+            if settings.email_enabled:
+                alert_cfg = sess.execute(select(AlertConfig)).scalar_one_or_none()
+                thresholds = _threshold_cache.get(payload.server_id)
+                if thresholds is None:
+                    t_db = sess.execute(select(ServerThreshold).where(ServerThreshold.server_id == payload.server_id)).scalar_one_or_none()
+                    if t_db:
+                        thresholds = {
+                            "cpu": t_db.cpu_threshold,
+                            "memory": t_db.memory_threshold,
+                            "disk": t_db.disk_threshold
+                        }
+                    else:
+                        thresholds = {}
+                    _threshold_cache[payload.server_id] = thresholds
+                cpu_limit = thresholds.get("cpu")
+                if cpu_limit is None and alert_cfg:
+                    cpu_limit = alert_cfg.cpu_total_percent
+                mem_limit = thresholds.get("memory")
+                if mem_limit is None and alert_cfg:
+                    mem_limit = alert_cfg.memory_used_percent
+                disk_limit = thresholds.get("disk")
+                if disk_limit is None and alert_cfg:
+                    disk_limit = alert_cfg.disk_used_percent
+                full_metrics = payload.model_dump()
+                current_time = time.time()
+                if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
+                    key = (payload.server_id, "cpu")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "cpu")
+                        print(f"[ALERT] Sending CPU alert for {srv.server_id}. Threshold: {cpu_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "CPU Alta", payload.cpu.total, cpu_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
+                mem_percent = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
+                if mem_limit and mem_limit > 0 and mem_percent >= mem_limit:
+                    key = (payload.server_id, "memory")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "memory")
+                        print(f"[ALERT] Sending Memory alert for {srv.server_id}. Threshold: {mem_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Memoria Alta", mem_percent, mem_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
+                if disk_limit and disk_limit > 0 and payload.disk.percent >= disk_limit:
+                    key = (payload.server_id, "disk")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "disk")
+                        print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
+                        send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
+                        _alert_state[key] = current_time
         except Exception as e:
             import traceback
             traceback.print_exc()

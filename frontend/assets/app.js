@@ -846,7 +846,8 @@ function ServerGroupManager() {
                         )
                       ),
                       React.createElement('td', { style: { padding: 8, fontSize: '0.8rem' } },
-                        s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos'
+                        (s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos') +
+                        (s.status === 'online' && s.uptime ? ` · ${s.uptime}` : '')
                       ),
                       React.createElement('td', { style: { padding: 8, fontSize: '0.8rem', color: 'var(--text-muted)' } },
                         savingServer === s.server_id ? 'Guardando...' : 'Listo'
@@ -943,6 +944,106 @@ function AlertRulesManager() {
   );
 }
 
+function NotificationSettingsPanel() {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    fetchJSON('/api/admin/notification-settings')
+      .then(setSettings)
+      .catch(e => alert(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const updateSetting = async (patch) => {
+    try {
+      setSaving(true);
+      const res = await fetchJSON('/api/admin/notification-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+      setSettings(res);
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !settings) {
+    return React.createElement('div', { className: 'card' }, 'Cargando configuración de notificaciones...');
+  }
+
+  const envLabel = settings.environment === 'production' ? 'Producción' : settings.environment === 'staging' ? 'Staging' : 'Desarrollo';
+
+  return React.createElement('div', { className: 'card' },
+    React.createElement('div', { className: 'card-header' },
+      React.createElement('div', { className: 'card-title' }, 'Notificaciones por Correo'),
+      saving && React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Guardando...')
+    ),
+    React.createElement('div', { style: { marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+      React.createElement('div', { style: { fontSize: '0.9rem', color: 'var(--text-muted)' } },
+        'Controla quién recibe correos y qué tipos de alertas se envían.'
+      ),
+      React.createElement('span', { style: { fontSize: '0.8rem', padding: '4px 10px', borderRadius: 999, background: settings.environment === 'production' ? 'rgba(248, 113, 113, 0.15)' : 'rgba(52, 211, 153, 0.12)', color: settings.environment === 'production' ? '#b91c1c' : '#047857' } },
+        'Entorno: ' + envLabel
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Envío de correos de notificación'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Activa o desactiva todas las notificaciones por correo.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.email_enabled,
+            onChange: e => updateSetting({ email_enabled: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.email_enabled ? 'Activado' : 'Desactivado')
+        )
+      ),
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Solo administradores como destinatarios'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Cuando está activo, solo usuarios admin reciben alertas.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.admin_only,
+            onChange: e => updateSetting({ admin_only: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.admin_only ? 'Solo admins' : 'Admins y otros')
+        )
+      ),
+      React.createElement('div', { style: { padding: 10, borderRadius: 8, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+          React.createElement('div', { style: { fontSize: '0.9rem', fontWeight: 500 } }, 'Alertas de servidor offline'),
+          React.createElement('div', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, 'Controla si se envían correos cuando un servidor deja de reportar.')
+        ),
+        React.createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' } },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!settings.offline_alerts_enabled,
+            onChange: e => updateSetting({ offline_alerts_enabled: e.target.checked }),
+            style: { width: 'auto' }
+          }),
+          React.createElement('span', null, settings.offline_alerts_enabled ? 'Activadas' : 'Desactivadas')
+        )
+      )
+    )
+  );
+}
+
 function AdminPanel() {
   const [tab, setTab] = useState('users');
   const [users, setUsers] = useState([]);
@@ -960,12 +1061,12 @@ function AdminPanel() {
 
   return React.createElement('div', { className: 'fade-in' },
     React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 20, overflowX: 'auto', paddingBottom: 5 } },
-      ['users', 'groups', 'alerts'].map(t => 
+      ['users', 'groups', 'alerts', 'notifications'].map(t => 
         React.createElement('button', { 
           key: t, 
           className: tab === t ? '' : 'secondary',
           onClick: () => setTab(t)
-        }, t === 'users' ? 'Usuarios' : t === 'groups' ? 'Grupos' : 'Alertas')
+        }, t === 'users' ? 'Usuarios' : t === 'groups' ? 'Grupos' : t === 'alerts' ? 'Alertas' : 'Notificaciones')
       )
     ),
     
@@ -1002,6 +1103,7 @@ function AdminPanel() {
 
     tab === 'groups' && React.createElement(ServerGroupManager),
     tab === 'alerts' && React.createElement(AlertRulesManager),
+    tab === 'notifications' && React.createElement(NotificationSettingsPanel),
 
     editingUser && React.createElement(UserEditModal, { user: editingUser.id ? editingUser : null, onClose: () => setEditingUser(null), onSave: () => { setEditingUser(null); loadUsers(); } }),
     assigningUser && React.createElement(ServerAssignmentModal, { user: assigningUser, onClose: () => setAssigningUser(null) })
@@ -1317,8 +1419,10 @@ function App() {
             servers.length === 0 
                 ? React.createElement('div', { className: 'card' }, 'No tienes servidores asignados.')
                 : React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 20 } },
-                    servers.map(s => 
-                        React.createElement('div', { 
+                    servers.map(s => {
+                        const statusText = s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos';
+                        const uptimeText = s.status === 'online' && s.uptime ? ` · ${s.uptime}` : '';
+                        return React.createElement('div', { 
                             key: s.server_id, 
                             className: 'card',
                             style: { cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border)' },
@@ -1332,11 +1436,11 @@ function App() {
                             ),
                             React.createElement('div', { style: { color: 'var(--text-muted)', fontSize: '0.9rem' } }, s.group_name ? `Grupo: ${s.group_name}` : 'Sin Grupo'),
                             React.createElement('div', { style: { marginTop: 8, fontSize: '0.8rem' } }, 
-                              s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos'
+                              statusText + uptimeText
                             ),
                             React.createElement('div', { style: { marginTop: 15, fontSize: '0.85rem', color: 'var(--primary)' } }, 'Ver Métricas →')
-                        )
-                    )
+                        );
+                    })
                 )
         );
     }
@@ -1350,7 +1454,14 @@ function App() {
     const sentGb = latest.network && latest.network.bytes_sent ? (latest.network.bytes_sent / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
     const recvGb = latest.network && latest.network.bytes_recv ? (latest.network.bytes_recv / (1024 * 1024 * 1024)).toFixed(2) : '0.00';
     const cpuData = history.map(h => h.cpu.total);
-    const memData = history.map(h => Math.round((h.memory.used / h.memory.total) * 100));
+    const memData = history.map(h => Math.round((h.memory.used / Math.max(h.memory.total || 1, 1)) * 100));
+    const cpuPercent = typeof latest.cpu.total === 'number' ? latest.cpu.total.toFixed(1) : '0.0';
+    const memPercent = latest.memory.total ? Math.round((latest.memory.used / latest.memory.total) * 100) : 0;
+    const memUsedGb = latest.memory.used ? (latest.memory.used / 1024).toFixed(1) : '0.0';
+    const memTotalGb = latest.memory.total ? (latest.memory.total / 1024).toFixed(1) : '0.0';
+    const diskPercent = typeof latest.disk.percent === 'number' ? Math.round(latest.disk.percent) : 0;
+    const diskUsedGb = typeof latest.disk.used === 'number' ? latest.disk.used.toFixed(1) : '0.0';
+    const diskTotalGb = typeof latest.disk.total === 'number' ? latest.disk.total.toFixed(1) : '0.0';
     
     return React.createElement('div', { className: 'fade-in' },
         !status.ok && React.createElement('div', { style: { padding: 15, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 8, marginBottom: 20 } }, status.message),
@@ -1368,9 +1479,9 @@ function App() {
         ),
 
         React.createElement('div', { className: 'grid-3' },
-            React.createElement(MetricCard, { title: 'CPU Total', value: `${latest.cpu.total || 0}%`, subtitle: 'Carga del sistema' }),
-            React.createElement(MetricCard, { title: 'Memoria', value: `${Math.round((latest.memory.used / latest.memory.total) * 100) || 0}%`, subtitle: `${(latest.memory.used/1024).toFixed(1)} / ${(latest.memory.total/1024).toFixed(1)} GB` }),
-            React.createElement(MetricCard, { title: 'Disco', value: `${Math.round(latest.disk.percent) || 0}%`, subtitle: `${latest.disk.used} / ${latest.disk.total} GB` }),
+            React.createElement(MetricCard, { title: 'CPU Total', value: `${cpuPercent}%`, subtitle: 'Carga del sistema' }),
+            React.createElement(MetricCard, { title: 'Memoria', value: `${memPercent || 0}%`, subtitle: `${memUsedGb} / ${memTotalGb} GB` }),
+            React.createElement(MetricCard, { title: 'Disco', value: `${diskPercent || 0}%`, subtitle: `${diskUsedGb} / ${diskTotalGb} GB` }),
             React.createElement(MetricCard, { title: 'Red', value: `${sentGb}↑ / ${recvGb}↓ GB`, subtitle: 'Totales enviados / recibidos' })
         ),
 

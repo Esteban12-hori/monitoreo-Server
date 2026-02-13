@@ -12,12 +12,24 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _has_connectivity() -> bool:
+    try:
+        resp = requests.get("https://api.mailjet.com", timeout=3)
+        return resp.status_code < 500
+    except Exception:
+        logger.warning("Sin conectividad a internet; sistema en modo offline. No se enviará correo.")
+        return False
+
+
 def send_alert_email(server_id: str, alert_type: str, current_value: float, threshold: float, extra_recipients: list = None, full_metrics: dict = None, custom_message: str = None):
     """
     Envía un correo de alerta usando Mailjet API v3.1.
     """
     if not EMAIL_API_KEY or not EMAIL_API_SECRET:
         logger.warning("Credenciales de email no configuradas. No se enviará alerta.")
+        return
+    if not _has_connectivity():
         return
 
     subject = f"{EMAIL_SUBJECT_PREFIX} 🚨 {alert_type} en {server_id}"

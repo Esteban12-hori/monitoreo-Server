@@ -49,9 +49,11 @@ body {
 .main-content {
   margin-left: var(--sidebar-width);
   flex: 1;
-  padding: 2rem;
+  padding: 2.5rem 3rem;
   width: 100%;
   transition: margin-left 0.3s ease;
+  max-width: 1440px;
+  margin-right: auto;
 }
 
 .sidebar.sidebar-collapsed {
@@ -113,11 +115,11 @@ body {
 /* Components */
 .card {
   background-color: var(--bg-card);
-  border-radius: 0.75rem;
-  padding: 1.5rem;
-  border: 1px solid var(--border);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  margin-bottom: 1.5rem;
+  border-radius: 1rem;
+  padding: 1.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.5);
+  margin-bottom: 1.75rem;
 }
 
 .card-header {
@@ -136,16 +138,16 @@ body {
 
 .grid-3 {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1.5rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.75rem;
 }
 
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
+  gap: 1.75rem;
+  margin-bottom: 1.75rem;
 }
 
 @media (max-width: 1024px) {
