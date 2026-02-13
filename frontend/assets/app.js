@@ -191,8 +191,12 @@ function ContainerMonitor({ containers }) {
   const [statusFilter, setStatusFilter] = useState('all');
   
   const filtered = (containers || []).filter(c => {
-      const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.image.toLowerCase().includes(search.toLowerCase());
-      const matchStatus = statusFilter === 'all' || c.status.toLowerCase().includes(statusFilter);
+      const term = (search || '').toLowerCase();
+      const name = (c && c.name ? String(c.name) : '').toLowerCase();
+      const image = (c && c.image ? String(c.image) : '').toLowerCase();
+      const status = (c && c.status ? String(c.status) : '').toLowerCase();
+      const matchSearch = name.includes(term) || image.includes(term);
+      const matchStatus = statusFilter === 'all' || status.includes(statusFilter);
       return matchSearch && matchStatus;
   });
   
@@ -229,20 +233,22 @@ function ContainerMonitor({ containers }) {
             React.createElement('tbody', null,
                 filtered.length === 0 
                 ? React.createElement('tr', null, React.createElement('td', { colSpan: 5, style: { padding: 20, textAlign: 'center' } }, 'No hay contenedores'))
-                : filtered.map(c => 
-                    React.createElement('tr', { key: c.id || c.name, style: { borderBottom: '1px solid var(--border)' } },
-                        React.createElement('td', { style: { padding: 10, fontWeight: 500 } }, c.name),
-                        React.createElement('td', { style: { padding: 10, fontSize: '0.85rem', color: 'var(--text-muted)' } }, c.image || '-'),
+                : filtered.map(c => {
+                    const status = c && c.status ? String(c.status) : '';
+                    const isUp = status.toLowerCase().includes('up');
+                    return React.createElement('tr', { key: c.id || c.name, style: { borderBottom: '1px solid var(--border)' } },
+                        React.createElement('td', { style: { padding: 10, fontWeight: 500 } }, c && c.name),
+                        React.createElement('td', { style: { padding: 10, fontSize: '0.85rem', color: 'var(--text-muted)' } }, (c && c.image) || '-'),
                         React.createElement('td', { style: { padding: 10 } }, 
                              React.createElement('span', { className: 'badge', style: { 
-                                 background: c.status.toLowerCase().includes('up') ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                                 color: c.status.toLowerCase().includes('up') ? '#10b981' : '#ef4444'
-                             } }, c.status)
+                                background: isUp ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                color: isUp ? '#10b981' : '#ef4444'
+                             } }, status || '-')
                         ),
                         React.createElement('td', { style: { padding: 10 } }, c.cpu || 0),
                         React.createElement('td', { style: { padding: 10 } }, c.mem || 0)
-                    )
-                )
+                    );
+                })
             )
         )
     )
@@ -254,7 +260,12 @@ function ServiceManager({ services, serverId }) {
     const [processing, setProcessing] = useState(null); // service_name being processed
     const [selectedServices, setSelectedServices] = useState({});
 
-    const filtered = (services || []).filter(s => s.name.toLowerCase().includes(search.toLowerCase()) || (s.display_name && s.display_name.toLowerCase().includes(search.toLowerCase())));
+    const filtered = (services || []).filter(s => {
+        const term = (search || '').toLowerCase();
+        const name = (s && s.name ? String(s.name) : '').toLowerCase();
+        const display = (s && s.display_name ? String(s.display_name) : '').toLowerCase();
+        return name.includes(term) || display.includes(term);
+    });
 
     const handleAction = async (serviceName, action) => {
         if (!confirm(`¿Estás seguro de que quieres ${action} el servicio ${serviceName}?`)) return;
