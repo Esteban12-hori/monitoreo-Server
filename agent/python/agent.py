@@ -6,10 +6,13 @@ import time
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import os
 
 import psutil
 import requests
 
+
+AGENT_VERSION = "1.0.0"
 
 def read_memory():
     vm = psutil.virtual_memory()
@@ -187,6 +190,7 @@ def payload(server_id: str):
         "docker": read_docker(),
         "services": read_services(),
         "network": read_network(),
+        "agent_version": AGENT_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
@@ -259,11 +263,61 @@ def check_commands(server_url, server_id, token, verify_tls):
         logging.error(f"Error checking commands: {e}")
 
 
+def check_agent_update(server_url: str, verify_tls, logger_obj=None):
+    log = logger_obj or logging
+    agent_path = Path(__file__).resolve()
+    backup_path = agent_path.with_suffix(".py.bak")
+    try:
+        resp = requests.get(
+            f"{server_url}/api/agent/version",
+            params={"current_version": AGENT_VERSION},
+            timeout=10,
+            verify=verify_tls if verify_tls else True,
+        )
+        if resp.status_code != 200:
+            return
+        data = resp.json()
+        latest = data.get("version")
+        download_url = data.get("download_url")
+        if not latest or not download_url:
+            return
+        if latest == AGENT_VERSION:
+            return
+        log.info("Nueva versión de agente disponible: %s (actual: %s)", latest, AGENT_VERSION)
+        dl_resp = requests.get(
+            server_url.rstrip("/") + download_url,
+            timeout=20,
+            verify=verify_tls if verify_tls else True,
+        )
+        if dl_resp.status_code != 200:
+            log.error("No se pudo descargar nueva versión del agente: %s %s", dl_resp.status_code, dl_resp.text)
+            return
+        content = dl_resp.text
+        if not content.strip():
+            log.error("Contenido de agente descargado vacío, abortando actualización")
+            return
+        if agent_path.exists():
+            agent_path.replace(backup_path)
+        with open(agent_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        log.info("Agente actualizado en disco, saliendo para reinicio por servicio")
+        os._exit(0)
+    except Exception as e:
+        log.error("Error durante actualización del agente: %s", e)
+        try:
+            if backup_path.exists() and not agent_path.exists():
+                backup_path.replace(agent_path)
+        except Exception:
+            pass
+
+
 def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls: str):
     last_metrics_time = 0
     metrics_interval = interval
     command_interval = 10 # Check every 10 seconds
     last_command_time = 0
+    update_interval = 600  # Check for agent updates every 10 minutes
+    last_update_time = 0
 
     logging.info(f"Iniciando bucle de agente. Intervalo métricas: {metrics_interval}s, Comandos: {command_interval}s")
 
@@ -274,6 +328,11 @@ def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls:
         if now - last_command_time >= command_interval:
             check_commands(server_url, server_id, token, verify_tls)
             last_command_time = now
+
+        # Check Agent Updates
+        if now - last_update_time >= update_interval:
+            check_agent_update(server_url, verify_tls, logging)
+            last_update_time = now
 
         # Send Metrics
         if now - last_metrics_time >= metrics_interval:

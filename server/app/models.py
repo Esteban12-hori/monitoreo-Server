@@ -74,6 +74,11 @@ class Metric(Base):
     docker_containers = Column(Text)  # JSON serializado
     services = Column(Text) # JSON serializado
 
+    net_bytes_sent = Column(Float)
+    net_bytes_recv = Column(Float)
+    net_packets_sent = Column(Float)
+    net_packets_recv = Column(Float)
+
 
 class AlertConfig(Base):
     __tablename__ = "alerts"

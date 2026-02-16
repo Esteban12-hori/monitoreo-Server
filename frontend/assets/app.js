@@ -1125,6 +1125,9 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [serverEnabled, setServerEnabled] = useState(
+    currentServer ? !!currentServer.data_monitoring_enabled : false
+  );
 
   const fetchData = async () => {
     try {
@@ -1144,6 +1147,7 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   };
 
   useEffect(() => {
+    setServerEnabled(currentServer ? !!currentServer.data_monitoring_enabled : false);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
@@ -1159,7 +1163,7 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
   const isAdmin = !!userInfo.is_admin;
   const hasGlobalDM = !!userInfo.can_view_data_monitoring;
 
-  if (!currentServer || !currentServer.data_monitoring_enabled) {
+  if (!currentServer || !serverEnabled) {
     if (isAdmin || hasGlobalDM) {
       return React.createElement('div', { className: 'card' }, 'Este servidor no tiene el dashboard de Postman habilitado');
     }
@@ -1173,10 +1177,36 @@ function DataMonitoringDashboard({ currentServer, userInfo }) {
 
   const canEdit = accessLevel === 'edit' || accessLevel === 'admin' || isAdmin;
 
+  const toggleServerEnabled = async () => {
+    if (!currentServer || !isAdmin) return;
+    const next = !serverEnabled;
+    try {
+      await fetchJSON(
+        `/api/admin/servers/${encodeURIComponent(
+          currentServer.server_id
+        )}/data-monitoring`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        }
+      );
+      setServerEnabled(next);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
   return React.createElement('div', { className: 'card' },
     React.createElement('div', { className: 'card-header' },
       React.createElement('div', { className: 'card-title' }, '📊 Dashboard Postman'),
       React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        isAdmin &&
+          React.createElement(
+            'button',
+            { className: 'secondary', onClick: toggleServerEnabled },
+            serverEnabled ? 'Desactivar para este servidor' : 'Activar para este servidor'
+          ),
         canEdit && React.createElement('button', { className: 'secondary', onClick: () => alert('Funcionalidad de edición en desarrollo') }, '✏️ Editar'),
         React.createElement('button', { className: 'secondary', onClick: fetchData }, 'Refrescar')
       )

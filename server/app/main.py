@@ -13,7 +13,7 @@ import html
 import requests
 
 from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -48,6 +48,7 @@ from .config import (
     OFFLINE_MIN_SECONDS,
     APP_ENV,
     IS_PRODUCTION,
+    AGENT_LATEST_VERSION,
 )
 from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, DataMonitoring, DataMonitoringServerConfig, DataMonitoringUserConfig, ServerGroup, AgentCommand, NotificationSettings
 from .schemas import (
@@ -108,6 +109,9 @@ _wa_favorite_server_ids = {
 _offline_threshold_seconds = max(
     OFFLINE_MIN_SECONDS, int(OFFLINE_CHECK_INTERVAL * OFFLINE_MULTIPLIER)
 )
+
+_repo_root = Path(__file__).resolve().parent.parent.parent
+_agent_file_path = _repo_root / "agent" / "python" / "agent.py"
 
 
 def _wa_get_session(wa_id: str) -> WhatsAppSessionData:
@@ -259,7 +263,7 @@ def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
         )
         if not row:
             return None
-        return {
+        result = {
             "server_id": row.server_id,
             "ts": str(row.ts),
             "memory": {
@@ -284,6 +288,22 @@ def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
             },
             "services": json.loads(row.services or "[]"),
         }
+        if any(
+            v is not None
+            for v in (
+                row.net_bytes_sent,
+                row.net_bytes_recv,
+                row.net_packets_sent,
+                row.net_packets_recv,
+            )
+        ):
+            result["network"] = {
+                "bytes_sent": row.net_bytes_sent or 0,
+                "bytes_recv": row.net_bytes_recv or 0,
+                "packets_sent": row.net_packets_sent or 0,
+                "packets_recv": row.net_packets_recv or 0,
+            }
+        return result
 
 
 def _compute_uptime_for_server(sess: Session, server_id: str) -> Optional[str]:
@@ -1847,6 +1867,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
         if not (0 <= payload.disk.percent <= 100):
             raise HTTPException(status_code=422, detail="disk.percent fuera de rango")
 
+        network = payload.network or None
+
         m = Metric(
             server_id=payload.server_id,
             mem_total=payload.memory.total,
@@ -1861,7 +1883,11 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             disk_percent=payload.disk.percent,
             docker_running=payload.docker.running_containers,
             docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
-            services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]"
+            services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]",
+            net_bytes_sent=network.bytes_sent if network else None,
+            net_bytes_recv=network.bytes_recv if network else None,
+            net_packets_sent=network.packets_sent if network else None,
+            net_packets_recv=network.packets_recv if network else None,
         )
         sess.add(m)
         sess.commit()
@@ -1993,15 +2019,31 @@ def metrics_history(server_id: Optional[str] = None, limit: int = 100, user: dic
             rows = sess.execute(q).scalars().all()
             rows = list(reversed(rows))
             def row_to_dict(r: Metric):
-                return {
+                result = {
                     "server_id": r.server_id,
                     "ts": str(r.ts),
                     "memory": {"total": r.mem_total, "used": r.mem_used, "free": r.mem_free, "cache": r.mem_cache},
                     "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
                     "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
                     "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
-                    "services": json.loads(r.services or "[]")
+                    "services": json.loads(r.services or "[]"),
                 }
+                if any(
+                    v is not None
+                    for v in (
+                        r.net_bytes_sent,
+                        r.net_bytes_recv,
+                        r.net_packets_sent,
+                        r.net_packets_recv,
+                    )
+                ):
+                    result["network"] = {
+                        "bytes_sent": r.net_bytes_sent or 0,
+                        "bytes_recv": r.net_bytes_recv or 0,
+                        "packets_sent": r.net_packets_sent or 0,
+                        "packets_recv": r.net_packets_recv or 0,
+                    }
+                return result
             data = [row_to_dict(r) for r in rows]
             if server_id:
                 _cache[server_id] = data[-CACHE_MAX_ITEMS:]
@@ -2048,6 +2090,26 @@ def health():
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/agent/version")
+def get_agent_version(current: Optional[str] = Query(None, alias="current_version")):
+    return {
+        "version": AGENT_LATEST_VERSION,
+        "current": current,
+        "download_url": "/api/agent/download",
+    }
+
+
+@app.get("/api/agent/download")
+def download_agent():
+    if not _agent_file_path.exists():
+        raise HTTPException(status_code=404, detail="Agent file not found on server")
+    return FileResponse(
+        path=str(_agent_file_path),
+        media_type="text/x-python",
+        filename="agent.py",
+    )
 
 
 @app.post("/api/data-monitoring", status_code=201)
