@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Table, Index
 from sqlalchemy.orm import declarative_base, relationship, backref
 from sqlalchemy.sql import func
 
@@ -78,6 +78,11 @@ class Metric(Base):
     net_bytes_recv = Column(Float)
     net_packets_sent = Column(Float)
     net_packets_recv = Column(Float)
+
+    # Índice compuesto para el patrón "última métrica por servidor".
+    __table_args__ = (
+        Index("ix_metrics_server_id_id", "server_id", "id"),
+    )
 
 
 class AlertConfig(Base):

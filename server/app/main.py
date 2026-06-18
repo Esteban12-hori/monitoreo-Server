@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy import create_engine, select, delete, text
+from sqlalchemy import create_engine, select, delete, text, event
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
@@ -81,10 +81,37 @@ def get_password_hash(password):
 
 def get_engine():
     db_url = f"sqlite:///{DB_PATH}"
-    engine = create_engine(db_url, future=True)
+    # check_same_thread=False: las rutas síncronas de FastAPI corren en un
+    # threadpool, por lo que las conexiones del pool pueden reutilizarse entre
+    # hilos. timeout: espera ante bloqueos de escritura en vez de fallar.
+    engine = create_engine(
+        db_url,
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
     return engine
 
 engine = get_engine()
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Optimiza SQLite para concurrencia lectura/escritura (agentes vs. dashboard).
+
+    - WAL permite leer mientras se escribe (el dashboard no se bloquea por los
+      POST de métricas de los agentes).
+    - synchronous=NORMAL es seguro bajo WAL y reduce drásticamente el coste de
+      cada commit de ingesta.
+    - busy_timeout evita errores "database is locked" bajo carga.
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 Base.metadata.create_all(engine)
 
 app = FastAPI(title="Monitor Integral")
@@ -189,6 +216,66 @@ def _wa_format_cpu_bar(percent: float) -> str:
     return "█" * filled + "░" * empty
 
 
+def _as_datetime(value) -> Optional[datetime]:
+    """Normaliza a datetime; SQLite puede devolver str en funciones agregadas."""
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _format_uptime(delta_seconds: float) -> Optional[str]:
+    if delta_seconds <= 0:
+        return None
+    days = int(delta_seconds // 86400)
+    hours = int((delta_seconds % 86400) // 3600)
+    minutes = int((delta_seconds % 3600) // 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _bulk_server_first_last(sess: Session, server_ids: List[str]) -> Dict[str, tuple]:
+    """Devuelve {server_id: (first_ts, last_ts)} en UNA sola consulta agregada.
+
+    Evita el patrón N+1 (3 consultas por servidor) al pintar el dashboard.
+    MIN/MAX sobre la columna de timestamp (ISO) equivale al orden cronológico.
+    """
+    if not server_ids:
+        return {}
+    rows = sess.execute(
+        select(Metric.server_id, func.min(Metric.ts), func.max(Metric.ts))
+        .where(Metric.server_id.in_(server_ids))
+        .group_by(Metric.server_id)
+    ).all()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def _status_uptime_from(first_ts, last_ts) -> Dict[str, Any]:
+    """Calcula estado online/offline y uptime a partir de first/last timestamp."""
+    last_ts = _as_datetime(last_ts)
+    if not last_ts:
+        return {"status": "unknown", "last_seen": None, "uptime": None}
+    now = datetime.utcnow()
+    if last_ts.tzinfo:
+        now = datetime.now(last_ts.tzinfo)
+    delta = (now - last_ts).total_seconds()
+    state = "online" if delta <= _offline_threshold_seconds else "offline"
+    uptime = None
+    if state == "online":
+        first = _as_datetime(first_ts)
+        if first:
+            uptime = _format_uptime((last_ts - first).total_seconds())
+    return {"status": state, "last_seen": last_ts, "uptime": uptime}
+
+
 def _compute_server_status(sess: Session, server_id: str) -> Dict[str, Any]:
     last = (
         sess.execute(
@@ -219,29 +306,33 @@ def _wa_list_servers_for_user(user_id: int) -> List[Dict[str, Any]]:
             return []
         results: List[Dict[str, Any]] = []
         if db_user and not db_user.is_admin:
-            for link in db_user.server_links:
-                if link.server:
-                    status = _compute_server_status(sess, link.server.server_id)
-                    results.append(
-                        {
-                            "server_id": link.server.server_id,
-                            "group_name": link.server.group_name,
-                            "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
-                            "status": status["status"],
-                            "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
-                        }
-                    )
+            links = [link for link in db_user.server_links if link.server]
+            stats = _bulk_server_first_last(sess, [link.server.server_id for link in links])
+            for link in links:
+                first_ts, last_ts = stats.get(link.server.server_id, (None, None))
+                st = _status_uptime_from(first_ts, last_ts)
+                results.append(
+                    {
+                        "server_id": link.server.server_id,
+                        "group_name": link.server.group_name,
+                        "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                        "status": st["status"],
+                        "last_seen": str(st["last_seen"]) if st["last_seen"] else None,
+                    }
+                )
         else:
             servers = sess.execute(select(Server)).scalars().all()
+            stats = _bulk_server_first_last(sess, [s.server_id for s in servers])
             for s in servers:
-                status = _compute_server_status(sess, s.server_id)
+                first_ts, last_ts = stats.get(s.server_id, (None, None))
+                st = _status_uptime_from(first_ts, last_ts)
                 results.append(
                     {
                         "server_id": s.server_id,
                         "group_name": s.group_name,
                         "data_monitoring_enabled": cfg_map.get(s.server_id, False),
-                        "status": status["status"],
-                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
+                        "status": st["status"],
+                        "last_seen": str(st["last_seen"]) if st["last_seen"] else None,
                     }
                 )
         return results
@@ -898,6 +989,27 @@ def ensure_server_group_column():
                 print(f"Error migrando group_name: {e}")
                 sess.rollback()
 
+def ensure_performance_indexes():
+    """Crea índices que aceleran las consultas calientes.
+
+    - ix_metrics_server_id_id: optimiza el patrón "última métrica por servidor"
+      (WHERE server_id=? ORDER BY id DESC LIMIT 1), usado en cada refresco del
+      dashboard y en el monitor de offline.
+    - ix_data_monitoring_entity_id: filtro frecuente en /api/data-monitoring.
+    Idempotente (IF NOT EXISTS); seguro de ejecutar en cada arranque.
+    """
+    statements = [
+        "CREATE INDEX IF NOT EXISTS ix_metrics_server_id_id ON metrics (server_id, id)",
+        "CREATE INDEX IF NOT EXISTS ix_data_monitoring_entity_id ON data_monitoring (entity_id)",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            try:
+                conn.exec_driver_sql(stmt)
+            except Exception as e:
+                print(f"Error creando índice de rendimiento: {e}")
+
+
 def ensure_notification_settings():
     with Session(engine) as sess:
         existing = sess.execute(select(NotificationSettings)).scalars().first()
@@ -981,6 +1093,7 @@ def startup():
         ensure_environment_column()
         ensure_server_group_column()
         ensure_notification_settings()
+        ensure_performance_indexes()
         ensure_admin_assignments()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
@@ -1394,28 +1507,31 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         db_user = sess.get(User, user["user_id"])
         
         results = []
-        
+
         if db_user and not db_user.is_admin:
-            for link in db_user.server_links:
-                if link.server:
-                    status = _compute_server_status(sess, link.server.server_id)
-                    uptime = _compute_uptime_for_server(sess, link.server.server_id) if status["status"] == "online" else None
-                    results.append({
-                        "server_id": link.server.server_id,
-                        "created_at": str(link.server.created_at),
-                        "group_name": link.server.group_name,
-                        "report_interval": link.server.report_interval,
-                        "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
-                        "postman_access_level": link.postman_access_level,
-                        "status": status["status"],
-                        "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
-                        "uptime": uptime,
-                    })
+            links = [link for link in db_user.server_links if link.server]
+            server_ids = [link.server.server_id for link in links]
+            stats = _bulk_server_first_last(sess, server_ids)
+            for link in links:
+                first_ts, last_ts = stats.get(link.server.server_id, (None, None))
+                st = _status_uptime_from(first_ts, last_ts)
+                results.append({
+                    "server_id": link.server.server_id,
+                    "created_at": str(link.server.created_at),
+                    "group_name": link.server.group_name,
+                    "report_interval": link.server.report_interval,
+                    "data_monitoring_enabled": cfg_map.get(link.server.server_id, False),
+                    "postman_access_level": link.postman_access_level,
+                    "status": st["status"],
+                    "last_seen": str(st["last_seen"]) if st["last_seen"] else None,
+                    "uptime": st["uptime"],
+                })
         else:
             servers = sess.execute(select(Server)).scalars().all()
+            stats = _bulk_server_first_last(sess, [s.server_id for s in servers])
             for s in servers:
-                status = _compute_server_status(sess, s.server_id)
-                uptime = _compute_uptime_for_server(sess, s.server_id) if status["status"] == "online" else None
+                first_ts, last_ts = stats.get(s.server_id, (None, None))
+                st = _status_uptime_from(first_ts, last_ts)
                 results.append({
                     "server_id": s.server_id,
                     "created_at": str(s.created_at),
@@ -1423,11 +1539,11 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
                     "report_interval": s.report_interval,
                     "data_monitoring_enabled": cfg_map.get(s.server_id, False),
                     "postman_access_level": "admin",
-                    "status": status["status"],
-                    "last_seen": str(status["last_seen"]) if status["last_seen"] else None,
-                    "uptime": uptime,
+                    "status": st["status"],
+                    "last_seen": str(st["last_seen"]) if st["last_seen"] else None,
+                    "uptime": st["uptime"],
                 })
-                
+
         return results
 
 @app.delete("/api/admin/servers/{server_id}")

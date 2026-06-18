@@ -12,6 +12,8 @@ agent/python/agent.config.json
 server/monitor.db
 server/data/
 *.db
+*.db-wal
+*.db-shm
 .DS_Store
 .vscode/
 .env

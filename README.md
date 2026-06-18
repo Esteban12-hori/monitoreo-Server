@@ -316,8 +316,38 @@ monitoreo-Server-main/
 └── README.md               # Este archivo
 ```
 
+## ⚡ Rendimiento y Mantenimiento de la Base de Datos
+
+El backend está optimizado para soportar muchos agentes reportando de forma concurrente sobre SQLite:
+
+*   **Modo WAL:** Al arrancar, la base de datos se configura en modo `WAL` (`journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=30s`). Esto permite que el dashboard lea mientras los agentes escriben métricas, eliminando los bloqueos globales del modo por defecto. La configuración se aplica automáticamente en cada conexión; no requiere acción manual.
+*   **Índices:** Se crean al inicio (función `ensure_performance_indexes`) un índice compuesto `ix_metrics_server_id_id` (acelera la consulta "última métrica por servidor", usada en cada refresco del dashboard) e `ix_data_monitoring_entity_id`.
+*   **Listado de servidores (`/api/servers`):** El estado online/offline y el uptime de todos los servidores se calculan en una sola consulta agregada (antes era 3 consultas por servidor).
+
+### ⚠️ Backups con WAL
+
+En modo WAL existen archivos auxiliares `monitor.db-wal` y `monitor.db-shm` junto a `monitor.db`. **Copiar solo `monitor.db` con el servicio en marcha puede perder datos** que aún estén en el `-wal`. Para un backup consistente:
+
+```bash
+# Opción A: detener el servicio antes de copiar
+sudo systemctl stop monitoreo-backend && cp server/data/monitor.db /ruta/backup/ && sudo systemctl start monitoreo-backend
+
+# Opción B (en caliente): forzar checkpoint y usar el comando de backup de sqlite
+sqlite3 server/data/monitor.db "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 server/data/monitor.db ".backup '/ruta/backup/monitor.db'"
+```
+
+### 🧹 Retención de métricas (recomendado)
+
+La tabla `metrics` crece de forma indefinida. En despliegues de larga duración conviene purgar periódicamente el historial antiguo (p. ej. con un cron) para mantener el tamaño de la base de datos y la velocidad de las consultas:
+
+```bash
+sqlite3 server/data/monitor.db "DELETE FROM metrics WHERE ts < datetime('now','-90 days'); VACUUM;"
+```
+
 ## ❓ Solución de Problemas Frecuentes
 
 *   **Error "NameError: name 'limiter' is not defined":** Asegúrate de haber instalado `slowapi` y reiniciado el servidor.
 *   **El Dashboard no carga:** Verifica que la carpeta `frontend` exista en la raíz y que el servidor tenga permisos de lectura.
 *   **El Agente no conecta:** Verifica que la URL del servidor sea accesible desde el nodo del agente y que no haya firewalls bloqueando el puerto 8000.
+*   **Error "database is locked":** Con el modo WAL y `busy_timeout` esto debería ser raro. Si ocurre, suele indicar que se está ejecutando el backend con más de un worker (debe ser **1**, ver `run_prod.sh`) o que un proceso externo (backup, `sqlite3`) mantiene la base bloqueada.

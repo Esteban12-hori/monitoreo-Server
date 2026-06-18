@@ -56,3 +56,5 @@ WHATSAPP_FAVORITE_SERVERS = os.getenv("WHATSAPP_FAVORITE_SERVERS", "")
 
 APP_ENV = os.getenv("APP_ENV", "development")
 IS_PRODUCTION = APP_ENV.lower() == "production"
+
+AGENT_LATEST_VERSION = os.getenv("AGENT_LATEST_VERSION", "1.0.0")
