@@ -10,6 +10,13 @@ class MemorySchema(BaseModel):
     cache: float
 
 
+class SwapSchema(BaseModel):
+    total: float
+    used: float
+    free: float
+    percent: float
+
+
 class CpuSchema(BaseModel):
     total: float
     per_core: List[float]
@@ -77,6 +84,7 @@ class AgentCommandResponse(BaseModel):
 class MetricsIngestSchema(BaseModel):
     server_id: str
     memory: MemorySchema
+    swap: Optional[SwapSchema] = None
     cpu: CpuSchema
     disk: DiskSchema
     docker: DockerSchema
@@ -94,6 +102,8 @@ class AlertConfigSchema(BaseModel):
     cpu_total_percent: float
     memory_used_percent: float
     disk_used_percent: float
+    swap_warning_percent: Optional[float] = None
+    swap_critical_percent: Optional[float] = None
 
 class LoginSchema(BaseModel):
     email: str
@@ -193,7 +203,7 @@ class AlertRecipientCreateSchema(BaseModel):
 
 
 class AlertRuleBase(BaseModel):
-    alert_type: str = Field(..., pattern="^(cpu|memory|disk|offline|service_status)$")
+    alert_type: str = Field(..., pattern="^(cpu|memory|disk|swap|offline|service_status)$")
     server_scope: str = Field(..., pattern="^(global|server|group)$")
     target_id: Optional[str] = None
     emails: List[EmailStr]
@@ -229,6 +239,8 @@ class ServerThresholdBase(BaseModel):
     cpu_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
     memory_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
     disk_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+    swap_warning_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+    swap_critical_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
 
 class ServerThresholdUpdate(ServerThresholdBase):
     pass

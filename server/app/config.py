@@ -11,6 +11,8 @@ DEFAULT_ALERTS = {
     "cpu_total_percent": 90.0,
     "memory_used_percent": 90.0,
     "disk_used_percent": 90.0,
+    "swap_warning_percent": float(os.getenv("SWAP_WARNING_PERCENT", "50.0")),
+    "swap_critical_percent": float(os.getenv("SWAP_CRITICAL_PERCENT", "80.0")),
 }
 
 ALLOWED_ORIGINS = ["*"]
@@ -57,4 +59,4 @@ WHATSAPP_FAVORITE_SERVERS = os.getenv("WHATSAPP_FAVORITE_SERVERS", "")
 APP_ENV = os.getenv("APP_ENV", "development")
 IS_PRODUCTION = APP_ENV.lower() == "production"
 
-AGENT_LATEST_VERSION = os.getenv("AGENT_LATEST_VERSION", "1.0.0")
+AGENT_LATEST_VERSION = os.getenv("AGENT_LATEST_VERSION", "1.1.0")

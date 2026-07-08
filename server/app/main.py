@@ -460,6 +460,16 @@ def _wa_build_alerts_summary(server_id: str, metrics: Dict[str, Any]) -> List[st
             if thr and thr.disk_threshold is not None
             else cfg.disk_used_percent
         )
+        swap_warn_thr = (
+            thr.swap_warning_threshold
+            if thr and thr.swap_warning_threshold is not None
+            else cfg.swap_warning_percent
+        )
+        swap_crit_thr = (
+            thr.swap_critical_threshold
+            if thr and thr.swap_critical_threshold is not None
+            else cfg.swap_critical_percent
+        )
     cpu_val = (metrics.get("cpu") or {}).get("total") or 0
     mem = metrics.get("memory") or {}
     mem_total = mem.get("total") or 0
@@ -467,12 +477,20 @@ def _wa_build_alerts_summary(server_id: str, metrics: Dict[str, Any]) -> List[st
     mem_pct = (mem_used / mem_total * 100.0) if mem_total else 0
     disk = metrics.get("disk") or {}
     disk_pct = disk.get("percent") or 0
+    swap = metrics.get("swap") or {}
+    swap_total = swap.get("total") or 0
+    swap_pct = swap.get("percent") or 0
     if cpu_val >= cpu_thr:
         alerts.append(f"CPU alta: {cpu_val:.1f}% (umbral {cpu_thr:.1f}%)")
     if mem_pct >= mem_thr:
         alerts.append(f"Memoria alta: {mem_pct:.1f}% (umbral {mem_thr:.1f}%)")
     if disk_pct >= disk_thr:
         alerts.append(f"Disco alto: {disk_pct:.1f}% (umbral {disk_thr:.1f}%)")
+    if swap_total > 0 and swap_warn_thr:
+        if swap_crit_thr and swap_pct >= swap_crit_thr:
+            alerts.append(f"Swap CRÍTICO: {swap_pct:.1f}% (umbral {swap_crit_thr:.1f}%)")
+        elif swap_pct >= swap_warn_thr:
+            alerts.append(f"Swap alta: {swap_pct:.1f}% (umbral {swap_warn_thr:.1f}%)")
     return alerts
 
 
@@ -487,6 +505,7 @@ def _wa_show_server_metrics(sess: WhatsAppSessionData, server_id: str) -> List[s
     cpu = metrics.get("cpu") or {}
     disk = metrics.get("disk") or {}
     mem = metrics.get("memory") or {}
+    swap = metrics.get("swap") or {}
     services = metrics.get("services") or []
     cpu_val = cpu.get("total") or 0
     cpu_bar = _wa_format_cpu_bar(cpu_val)
@@ -528,6 +547,13 @@ def _wa_show_server_metrics(sess: WhatsAppSessionData, server_id: str) -> List[s
     lines.append(
         f"Memoria: {mem_used:.1f}/{mem_total:.1f} MB (libre {mem_free:.1f} MB)"
     )
+    swap_total = swap.get("total") or 0
+    if swap_total > 0:
+        swap_used = swap.get("used") or 0
+        swap_pct = swap.get("percent") or 0
+        lines.append(
+            f"Swap: {swap_used:.1f}/{swap_total:.1f} MB usados ({swap_pct:.1f}%)"
+        )
     lines.append(
         f"Disco: {disk_used:.1f}/{disk_total:.1f} GB usados ({disk_pct:.1f}%)"
     )
@@ -892,9 +918,58 @@ def ensure_default_alerts(sess: Session):
             cpu_total_percent=DEFAULT_ALERTS["cpu_total_percent"],
             memory_used_percent=DEFAULT_ALERTS["memory_used_percent"],
             disk_used_percent=DEFAULT_ALERTS["disk_used_percent"],
+            swap_warning_percent=DEFAULT_ALERTS["swap_warning_percent"],
+            swap_critical_percent=DEFAULT_ALERTS["swap_critical_percent"],
         )
         sess.add(cfg)
         sess.commit()
+    elif cfg.swap_warning_percent is None or cfg.swap_critical_percent is None:
+        # Config preexistente sin umbrales de swap (DB migrada): sembrar defaults.
+        if cfg.swap_warning_percent is None:
+            cfg.swap_warning_percent = DEFAULT_ALERTS["swap_warning_percent"]
+        if cfg.swap_critical_percent is None:
+            cfg.swap_critical_percent = DEFAULT_ALERTS["swap_critical_percent"]
+        sess.commit()
+
+
+def ensure_swap_columns():
+    """Migración manual idempotente para las columnas de Swap.
+
+    `Base.metadata.create_all` solo crea tablas nuevas, nunca altera existentes,
+    así que las columnas de swap añadidas a metrics/alerts/server_thresholds deben
+    aplicarse por ALTER en DBs ya desplegadas. Ver también scripts/migrate_v8.py.
+    """
+    checks = [
+        (Metric.swap_total, "metrics", [
+            "ALTER TABLE metrics ADD COLUMN swap_total REAL",
+            "ALTER TABLE metrics ADD COLUMN swap_used REAL",
+            "ALTER TABLE metrics ADD COLUMN swap_free REAL",
+            "ALTER TABLE metrics ADD COLUMN swap_percent REAL",
+        ]),
+        (AlertConfig.swap_warning_percent, "alerts", [
+            "ALTER TABLE alerts ADD COLUMN swap_warning_percent REAL",
+            "ALTER TABLE alerts ADD COLUMN swap_critical_percent REAL",
+        ]),
+        (ServerThreshold.swap_warning_threshold, "server_thresholds", [
+            "ALTER TABLE server_thresholds ADD COLUMN swap_warning_threshold REAL",
+            "ALTER TABLE server_thresholds ADD COLUMN swap_critical_threshold REAL",
+        ]),
+    ]
+    for probe_col, table, statements in checks:
+        with Session(engine) as sess:
+            try:
+                sess.execute(select(probe_col).limit(1))
+                continue  # Las columnas ya existen.
+            except Exception:
+                pass
+        print(f"Agregando columnas de swap a {table}...")
+        with engine.begin() as conn:
+            for stmt in statements:
+                try:
+                    conn.exec_driver_sql(stmt)
+                except Exception as e:
+                    if "duplicate column name" not in str(e).lower():
+                        print(f"Error migrando swap en {table}: {e}")
 
 def ensure_default_users(sess: Session):
     # Sincronizar usuarios permitidos desde config
@@ -1092,6 +1167,7 @@ def startup():
         ensure_sidebar_config_column()
         ensure_environment_column()
         ensure_server_group_column()
+        ensure_swap_columns()
         ensure_notification_settings()
         ensure_performance_indexes()
         ensure_admin_assignments()
@@ -1113,6 +1189,10 @@ _threshold_cache: dict[str, dict] = {}
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
 ALERT_COOLDOWN = 3600
+
+# Severidad de swap actualmente activa por servidor: {server_id: "warning"|"critical"}.
+# Permite escalar (warning->critical) y emitir la notificación de normalización.
+_swap_alert_active: dict[str, str] = {}
 
 
 async def _offline_monitor_loop():
@@ -1903,20 +1983,30 @@ def update_threshold(server_id: str, payload: ServerThresholdUpdate, user: dict 
         if payload.disk_threshold is not None:
             changes["disk_threshold"] = {"old": t.disk_threshold, "new": payload.disk_threshold}
             t.disk_threshold = payload.disk_threshold
-            
+
+        if payload.swap_warning_threshold is not None:
+            changes["swap_warning_threshold"] = {"old": t.swap_warning_threshold, "new": payload.swap_warning_threshold}
+            t.swap_warning_threshold = payload.swap_warning_threshold
+
+        if payload.swap_critical_threshold is not None:
+            changes["swap_critical_threshold"] = {"old": t.swap_critical_threshold, "new": payload.swap_critical_threshold}
+            t.swap_critical_threshold = payload.swap_critical_threshold
+
         # Log Audit
         log_audit(sess, "update", "threshold", server_id, changes, user["email"])
-        
+
         sess.commit()
         sess.refresh(t)
-        
+
         # Update Cache
         _threshold_cache[server_id] = {
             "cpu": t.cpu_threshold,
             "memory": t.memory_threshold,
-            "disk": t.disk_threshold
+            "disk": t.disk_threshold,
+            "swap_warning": t.swap_warning_threshold,
+            "swap_critical": t.swap_critical_threshold,
         }
-        
+
         return t
 
 @app.get("/api/umbrales/export", response_model=List[ServerThresholdResponse])
@@ -1943,12 +2033,16 @@ def import_thresholds(payload: List[ServerThresholdImport], user: dict = Depends
             t.cpu_threshold = item.cpu_threshold
             t.memory_threshold = item.memory_threshold
             t.disk_threshold = item.disk_threshold
-            
+            t.swap_warning_threshold = item.swap_warning_threshold
+            t.swap_critical_threshold = item.swap_critical_threshold
+
             # Update cache immediately
             _threshold_cache[item.server_id] = {
                 "cpu": t.cpu_threshold,
                 "memory": t.memory_threshold,
-                "disk": t.disk_threshold
+                "disk": t.disk_threshold,
+                "swap_warning": t.swap_warning_threshold,
+                "swap_critical": t.swap_critical_threshold,
             }
             count += 1
         
@@ -1984,6 +2078,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             raise HTTPException(status_code=422, detail="disk.percent fuera de rango")
 
         network = payload.network or None
+        swap = payload.swap or None
 
         m = Metric(
             server_id=payload.server_id,
@@ -1991,6 +2086,10 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             mem_used=payload.memory.used,
             mem_free=payload.memory.free,
             mem_cache=payload.memory.cache,
+            swap_total=swap.total if swap else None,
+            swap_used=swap.used if swap else None,
+            swap_free=swap.free if swap else None,
+            swap_percent=swap.percent if swap else None,
             cpu_total=payload.cpu.total,
             cpu_per_core=json.dumps(payload.cpu.per_core),
             disk_total=payload.disk.total,
@@ -2019,7 +2118,9 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                         thresholds = {
                             "cpu": t_db.cpu_threshold,
                             "memory": t_db.memory_threshold,
-                            "disk": t_db.disk_threshold
+                            "disk": t_db.disk_threshold,
+                            "swap_warning": t_db.swap_warning_threshold,
+                            "swap_critical": t_db.swap_critical_threshold,
                         }
                     else:
                         thresholds = {}
@@ -2033,6 +2134,12 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 disk_limit = thresholds.get("disk")
                 if disk_limit is None and alert_cfg:
                     disk_limit = alert_cfg.disk_used_percent
+                swap_warn_limit = thresholds.get("swap_warning")
+                if swap_warn_limit is None and alert_cfg:
+                    swap_warn_limit = alert_cfg.swap_warning_percent
+                swap_crit_limit = thresholds.get("swap_critical")
+                if swap_crit_limit is None and alert_cfg:
+                    swap_crit_limit = alert_cfg.swap_critical_percent
                 full_metrics = payload.model_dump()
                 current_time = time.time()
                 if cpu_limit and cpu_limit > 0 and payload.cpu.total >= cpu_limit:
@@ -2060,6 +2167,53 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                         print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
                         send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
                         _alert_state[key] = current_time
+
+                # --- Swap: severidad de dos niveles + normalización ---
+                # Solo se evalúa si el servidor tiene swap configurado (total > 0).
+                if swap is not None and swap.total and swap.total > 0 and swap_warn_limit and swap_warn_limit > 0:
+                    swap_pct = swap.percent
+                    if not swap_pct and swap.total > 0:
+                        swap_pct = swap.used / swap.total * 100
+                    key = (payload.server_id, "swap")
+                    prev_sev = _swap_alert_active.get(payload.server_id)
+                    if swap_crit_limit and swap_crit_limit > 0 and swap_pct >= swap_crit_limit:
+                        new_sev = "critical"
+                    elif swap_pct >= swap_warn_limit:
+                        new_sev = "warning"
+                    else:
+                        new_sev = None
+
+                    if new_sev:
+                        last_sent = _alert_state.get(key, 0)
+                        escalated = prev_sev == "warning" and new_sev == "critical"
+                        # Enviar en el primer disparo, al escalar, o al vencer el cooldown (RN07).
+                        if prev_sev is None or escalated or (current_time - last_sent > ALERT_COOLDOWN):
+                            sev_label = "CRÍTICO" if new_sev == "critical" else "ADVERTENCIA"
+                            threshold_used = swap_crit_limit if new_sev == "critical" else swap_warn_limit
+                            recipients, applied_rules = get_alert_recipients(sess, srv, "swap")
+                            print(f"[ALERT] Sending Swap {sev_label} alert for {srv.server_id}. Value: {swap_pct:.1f}% Threshold: {threshold_used}%. Applied rules: {applied_rules}")
+                            send_alert_email(
+                                payload.server_id, f"Swap {sev_label}", round(swap_pct, 1), threshold_used,
+                                recipients, full_metrics, environment=APP_ENV, severity=sev_label,
+                            )
+                            _alert_state[key] = current_time
+                            _swap_alert_active[payload.server_id] = new_sev
+                            log_audit(sess, "swap_alert", "swap", payload.server_id,
+                                      {"severity": new_sev, "value": round(swap_pct, 1), "threshold": threshold_used}, "system")
+                            sess.commit()
+                    elif prev_sev is not None:
+                        # Recuperación: el swap volvió por debajo del umbral de advertencia (Escenario 6).
+                        recipients, applied_rules = get_alert_recipients(sess, srv, "swap")
+                        print(f"[ALERT] Swap recovered for {srv.server_id}. Value: {swap_pct:.1f}%")
+                        send_alert_email(
+                            payload.server_id, "Swap Normalizado", round(swap_pct, 1), swap_warn_limit,
+                            recipients, full_metrics, environment=APP_ENV, severity="NORMALIZACIÓN", is_recovery=True,
+                            custom_message=f"El uso de Swap volvió a niveles normales ({swap_pct:.1f}%, por debajo del umbral de advertencia {swap_warn_limit}%).",
+                        )
+                        _swap_alert_active.pop(payload.server_id, None)
+                        _alert_state.pop(key, None)
+                        log_audit(sess, "swap_recovery", "swap", payload.server_id, {"value": round(swap_pct, 1)}, "system")
+                        sess.commit()
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -2159,6 +2313,16 @@ def metrics_history(server_id: Optional[str] = None, limit: int = 100, user: dic
                         "packets_sent": r.net_packets_sent or 0,
                         "packets_recv": r.net_packets_recv or 0,
                     }
+                if any(
+                    v is not None
+                    for v in (r.swap_total, r.swap_used, r.swap_free, r.swap_percent)
+                ):
+                    result["swap"] = {
+                        "total": r.swap_total or 0,
+                        "used": r.swap_used or 0,
+                        "free": r.swap_free or 0,
+                        "percent": r.swap_percent or 0,
+                    }
                 return result
             data = [row_to_dict(r) for r in rows]
             if server_id:
@@ -2176,6 +2340,8 @@ def get_alerts(user: dict = Depends(get_current_user_from_token)):
             "cpu_total_percent": cfg.cpu_total_percent,
             "memory_used_percent": cfg.memory_used_percent,
             "disk_used_percent": cfg.disk_used_percent,
+            "swap_warning_percent": cfg.swap_warning_percent,
+            "swap_critical_percent": cfg.swap_critical_percent,
         }
 
 
@@ -2194,6 +2360,11 @@ def set_alerts(payload: AlertConfigSchema, user: dict = Depends(require_admin)):
             cfg.cpu_total_percent = payload.cpu_total_percent
             cfg.memory_used_percent = payload.memory_used_percent
             cfg.disk_used_percent = payload.disk_used_percent
+        # Umbrales de swap (opcionales para no romper clientes antiguos).
+        if payload.swap_warning_percent is not None:
+            cfg.swap_warning_percent = payload.swap_warning_percent
+        if payload.swap_critical_percent is not None:
+            cfg.swap_critical_percent = payload.swap_critical_percent
         sess.commit()
         return {"status": "updated"}
 

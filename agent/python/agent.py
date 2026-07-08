@@ -12,7 +12,7 @@ import psutil
 import requests
 
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 def read_memory():
     vm = psutil.virtual_memory()
@@ -22,6 +22,20 @@ def read_memory():
         "free": float(vm.available) / (1024 ** 2),
         "cache": float(getattr(vm, "cached", 0)) / (1024 ** 2),
     }
+
+
+def read_swap():
+    try:
+        sw = psutil.swap_memory()
+        return {
+            "total": float(sw.total) / (1024 ** 2),
+            "used": float(sw.used) / (1024 ** 2),
+            "free": float(sw.free) / (1024 ** 2),
+            "percent": float(sw.percent),
+        }
+    except Exception:
+        # Un fallo de lectura no debe detener el ciclo de monitoreo.
+        return {"total": 0.0, "used": 0.0, "free": 0.0, "percent": 0.0}
 
 
 def read_cpu():
@@ -185,6 +199,7 @@ def payload(server_id: str):
     return {
         "server_id": server_id,
         "memory": read_memory(),
+        "swap": read_swap(),
         "cpu": read_cpu(),
         "disk": read_disk(),
         "docker": read_docker(),

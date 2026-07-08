@@ -135,7 +135,7 @@ function BarChart({ labels, data, label, color='#38bdf8' }) {
 }
 
 function ThresholdModal({ serverId, onClose }) {
-  const [config, setConfig] = useState({ cpu: 80, ram: 80, disk: 80 });
+  const [config, setConfig] = useState({ cpu: 80, ram: 80, disk: 80, swap_warning: 50, swap_critical: 80 });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -145,6 +145,8 @@ function ThresholdModal({ serverId, onClose }) {
           cpu: t.cpu_threshold ?? 80,
           ram: t.memory_threshold ?? 80,
           disk: t.disk_threshold ?? 80,
+          swap_warning: t.swap_warning_threshold ?? 50,
+          swap_critical: t.swap_critical_threshold ?? 80,
         });
       })
       .catch(console.error);
@@ -153,13 +155,15 @@ function ThresholdModal({ serverId, onClose }) {
   const handleSave = async () => {
     try {
       setLoading(true);
-      await fetchJSON(`/api/umbrales/${serverId}`, { 
-        method: 'PUT', 
+      await fetchJSON(`/api/umbrales/${serverId}`, {
+        method: 'PUT',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
           cpu_threshold: config.cpu,
           memory_threshold: config.ram,
           disk_threshold: config.disk,
+          swap_warning_threshold: config.swap_warning,
+          swap_critical_threshold: config.swap_critical,
         })
       });
       onClose();
@@ -167,14 +171,25 @@ function ThresholdModal({ serverId, onClose }) {
     finally { setLoading(false); }
   };
 
+  const swapFields = [
+    { key: 'swap_warning', label: 'SWAP Advertencia (%)' },
+    { key: 'swap_critical', label: 'SWAP Crítico (%)' },
+  ];
+
   return React.createElement('div', { className: 'modal-overlay' },
     React.createElement('div', { className: 'card', style: { width: 400, maxHeight: '90vh', overflowY: 'auto' } },
       React.createElement('div', { className: 'card-title', style: { marginBottom: 20 } }, `Umbrales: ${serverId}`),
       React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 15 } },
-        ['cpu', 'ram', 'disk'].map(k => 
+        ['cpu', 'ram', 'disk'].map(k =>
           React.createElement('div', { key: k },
             React.createElement('label', { style: { display: 'block', marginBottom: 5, color: 'var(--text-muted)' } }, `${k.toUpperCase()} (%)`),
             React.createElement('input', { type: 'number', value: config[k], onChange: e => setConfig({...config, [k]: parseInt(e.target.value)||0}) })
+          )
+        ),
+        swapFields.map(f =>
+          React.createElement('div', { key: f.key },
+            React.createElement('label', { style: { display: 'block', marginBottom: 5, color: 'var(--text-muted)' } }, f.label),
+            React.createElement('input', { type: 'number', value: config[f.key], onChange: e => setConfig({...config, [f.key]: parseInt(e.target.value)||0}) })
           )
         )
       ),
@@ -923,7 +938,7 @@ function AlertRulesManager() {
     React.createElement('div', { className: 'card-title' }, 'Reglas de Ruteo de Alertas'),
     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 20 } },
       React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}) },
-        ['cpu', 'memory', 'disk', 'offline', 'service_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
+        ['cpu', 'memory', 'disk', 'swap', 'offline', 'service_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
       ),
       React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}) },
         React.createElement('option', { value: 'global' }, 'Global'),
@@ -1486,7 +1501,7 @@ function App() {
         );
     }
 
-    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, docker:{running_containers:0}, network:{bytes_sent:0,bytes_recv:0} };
+    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, swap:{used:0,total:0,percent:0}, docker:{running_containers:0}, network:{bytes_sent:0,bytes_recv:0} };
     const selectedServer = servers.find(s => s.server_id === selected) || {};
     const isOnline = selectedServer.status === 'online';
     const statusLabel = selectedServer.status === 'offline' ? 'Offline' : (selectedServer.status === 'online' ? 'Online' : 'Sin datos');
@@ -1503,6 +1518,11 @@ function App() {
     const diskPercent = typeof latest.disk.percent === 'number' ? Math.round(latest.disk.percent) : 0;
     const diskUsedGb = typeof latest.disk.used === 'number' ? latest.disk.used.toFixed(1) : '0.0';
     const diskTotalGb = typeof latest.disk.total === 'number' ? latest.disk.total.toFixed(1) : '0.0';
+    const swap = latest.swap || {};
+    const hasSwap = typeof swap.total === 'number' && swap.total > 0;
+    const swapPercent = hasSwap ? Math.round(swap.percent || (swap.used / swap.total * 100)) : 0;
+    const swapUsedGb = typeof swap.used === 'number' ? (swap.used / 1024).toFixed(1) : '0.0';
+    const swapTotalGb = typeof swap.total === 'number' ? (swap.total / 1024).toFixed(1) : '0.0';
     
     return React.createElement('div', { className: 'fade-in' },
         !status.ok && React.createElement('div', { style: { padding: 15, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 8, marginBottom: 20 } }, status.message),
@@ -1522,6 +1542,7 @@ function App() {
         React.createElement('div', { className: 'grid-3' },
             React.createElement(MetricCard, { title: 'CPU Total', value: `${cpuPercent}%`, subtitle: 'Carga del sistema' }),
             React.createElement(MetricCard, { title: 'Memoria', value: `${memPercent || 0}%`, subtitle: `${memUsedGb} / ${memTotalGb} GB` }),
+            React.createElement(MetricCard, { title: 'Swap', value: hasSwap ? `${swapPercent}%` : 'N/D', subtitle: hasSwap ? `${swapUsedGb} / ${swapTotalGb} GB` : 'Sin swap configurado' }),
             React.createElement(MetricCard, { title: 'Disco', value: `${diskPercent || 0}%`, subtitle: `${diskUsedGb} / ${diskTotalGb} GB` }),
             React.createElement(MetricCard, { title: 'Red', value: `${sentGb}↑ / ${recvGb}↓ GB`, subtitle: 'Totales enviados / recibidos' })
         ),

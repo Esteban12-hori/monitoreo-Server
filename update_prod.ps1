@@ -20,6 +20,7 @@ pip install -r server/requirements.txt
 Write-Host "🗄️  3. Aplicando migraciones de base de datos..." -ForegroundColor Yellow
 $env:PYTHONPATH = "."
 python server/scripts/migrate_v3.py
+if (Test-Path "server/scripts/migrate_v8.py") { python server/scripts/migrate_v8.py }
 
 # 4. Reiniciar
 Write-Host "🔄 4. Reiniciando servicios..." -ForegroundColor Yellow

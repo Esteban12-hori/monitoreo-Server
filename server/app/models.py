@@ -62,6 +62,11 @@ class Metric(Base):
     mem_free = Column(Float)
     mem_cache = Column(Float)
 
+    swap_total = Column(Float)
+    swap_used = Column(Float)
+    swap_free = Column(Float)
+    swap_percent = Column(Float)
+
     cpu_total = Column(Float)
     cpu_per_core = Column(Text)  # JSON serializado
 
@@ -91,6 +96,8 @@ class AlertConfig(Base):
     cpu_total_percent = Column(Float)
     memory_used_percent = Column(Float)
     disk_used_percent = Column(Float)
+    swap_warning_percent = Column(Float)
+    swap_critical_percent = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
@@ -162,6 +169,8 @@ class ServerThreshold(Base):
     cpu_threshold = Column(Float, nullable=True)     # %
     memory_threshold = Column(Float, nullable=True)  # %
     disk_threshold = Column(Float, nullable=True)    # %
+    swap_warning_threshold = Column(Float, nullable=True)   # %
+    swap_critical_threshold = Column(Float, nullable=True)  # %
     
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
