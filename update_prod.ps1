@@ -7,7 +7,9 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # 1. Descargar cambios
 Write-Host "📥 1. Descargando código fuente (git pull)..." -ForegroundColor Yellow
-git pull origin main
+# --autostash: guarda los cambios locales (p. ej. server/app/config.py del servidor)
+# antes del pull y los reaplica después, para que no aborte el deploy.
+git pull --autostash origin main
 
 # 2. Dependencias
 Write-Host "📦 2. Verificando dependencias Python..." -ForegroundColor Yellow

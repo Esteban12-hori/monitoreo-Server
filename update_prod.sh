@@ -11,7 +11,11 @@ echo "========================================"
 
 # 1. Descargar últimos cambios
 echo "📥 1. Descargando código fuente (git pull)..."
-git pull origin main
+# --autostash: guarda automáticamente los cambios locales (p. ej. server/app/config.py
+# editado en producción) antes del pull y los reaplica después, para que un archivo
+# con valores propios del servidor no aborte el deploy. Si al reaplicar hubiera un
+# conflicto real (misma línea editada), git avisa y el script se detiene (set -e).
+git pull --autostash origin main
 
 # 2. Activar entorno virtual y actualizar dependencias
 echo "📦 2. Verificando dependencias Python..."
