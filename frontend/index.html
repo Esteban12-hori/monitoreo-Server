@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ServPulse Dashboard</title>
     <link rel="stylesheet" href="assets/styles.css" />
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Librerías servidas localmente (sin dependencia de CDN externo) -->
+    <script src="assets/vendor/react.production.min.js"></script>
+    <script src="assets/vendor/react-dom.production.min.js"></script>
+    <script src="assets/vendor/chart.umd.min.js"></script>
     <script>
       window.addEventListener('error', function(e) {
         document.body.innerHTML += '<div style="color:red; padding:20px; background:white; position:fixed; top:0; left:0; z-index:9999; border: 2px solid red;">JS Error: ' + e.message + ' at ' + e.filename + ':' + e.lineno + '</div>';
