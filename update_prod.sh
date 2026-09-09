@@ -43,6 +43,9 @@ fi
 if [ -f "server/scripts/migrate_v8.py" ]; then
     python server/scripts/migrate_v8.py || true
 fi
+if [ -f "server/scripts/migrate_v9.py" ]; then
+    python server/scripts/migrate_v9.py || true
+fi
 
 # 4. Reiniciar el servicio para aplicar cambios de código
 # Detectar si usamos systemd o pm2

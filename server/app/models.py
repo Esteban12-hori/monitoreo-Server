@@ -77,6 +77,8 @@ class Metric(Base):
 
     docker_running = Column(Integer)
     docker_containers = Column(Text)  # JSON serializado
+    pm2_running = Column(Integer)
+    pm2_processes = Column(Text)  # JSON serializado
     services = Column(Text) # JSON serializado
 
     net_bytes_sent = Column(Float)

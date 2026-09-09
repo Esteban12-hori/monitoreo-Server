@@ -253,6 +253,54 @@ Estos scripts realizan automáticamente:
 3. Migraciones de base de datos (`migrate_v3.py` para nuevas tablas/columnas)
 4. Reinicio del servicio backend
 
+### 🤖 Auto-actualización sin intervención manual (CD)
+
+Además de ejecutar `update_prod.sh`/`update_prod.ps1` a mano, el repo incluye un
+**vigía** (`server/scripts/auto_deploy_watch.sh` / `.ps1`) pensado para correr
+periódicamente: hace `git fetch`, compara el `HEAD` local contra `origin/main`
+y **solo si hay commits nuevos** ejecuta el script de actualización completo
+(pull + dependencias + migraciones + reinicio). Si no hay cambios, no hace
+nada — así basta con hacer `git push` a `main` para que el servidor se
+actualice solo en el siguiente ciclo, sin tocarlo manualmente.
+
+**Linux (systemd timer, recomendado):**
+```bash
+sudo cp deploy/systemd/monitoreo-autodeploy.service.example /etc/systemd/system/monitoreo-autodeploy.service
+sudo cp deploy/systemd/monitoreo-autodeploy.timer.example /etc/systemd/system/monitoreo-autodeploy.timer
+# Ajusta WorkingDirectory/ExecStart/usuario en el .service a tu instalación
+sudo systemctl daemon-reload
+sudo systemctl enable --now monitoreo-autodeploy.timer
+```
+Por defecto revisa cambios cada 5 minutos (`OnUnitActiveSec=5min` en el `.timer`).
+
+Como `update_prod.sh` reinicia los servicios con `sudo systemctl restart
+monitoreo-backend`/`monitoreo-agent`, y el timer corre sin terminal
+interactiva, el usuario de servicio necesita permiso para hacerlo sin
+contraseña. Agrega con `sudo visudo -f /etc/sudoers.d/monitoreo-autodeploy`:
+```
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart monitoreo-backend, /bin/systemctl restart monitoreo-agent, /bin/systemctl reload monitoreo-backend
+```
+(ajusta el usuario `ubuntu` al configurado en el `.service`).
+
+**Windows (Programador de Tareas):**
+1. Crear una tarea básica que ejecute `powershell.exe` con argumentos
+   `-File "C:\ruta\a\monitoreo-Server-main\server\scripts\auto_deploy_watch.ps1"`.
+2. En el desencadenador, elegir "Diariamente" y luego configurar
+   "Repetir tarea cada: 5 minutos" durante una duración de "Indefinidamente".
+3. Marcar "Ejecutar tanto si el usuario inició sesión como si no".
+
+Los logs de cada ejecución (con o sin cambios aplicados) quedan en `logs/auto_deploy.log`.
+
+**Agente:** no requiere nada adicional — ya se autoactualiza solo. Cada
+agente instalado consulta `GET /api/agent/version` cada 10 minutos y, si el
+servidor anuncia una versión más nueva (`AGENT_LATEST_VERSION` en
+`server/app/config.py`), descarga el nuevo `agent.py`, se sobrescribe a sí
+mismo y termina su proceso (`os._exit(0)`); el supervisor que lo mantiene vivo
+(`Restart=always` en systemd, o `autorestart: true` en `ecosystem.config.js`
+para PM2) lo vuelve a levantar automáticamente ya con el código actualizado.
+Por eso es importante instalar el agente como servicio/PM2 (ver secciones
+anteriores) y no ejecutarlo suelto en una terminal.
+
 ### 🔄 Actualización sin Caídas (Zero-Downtime Deployment) - Manual
 
 Si estás ejecutando el servidor en producción con **Linux y Systemd** (usando la configuración recomendada con Gunicorn), puedes actualizar el código sin detener el servicio ni desconectar a los usuarios activos.

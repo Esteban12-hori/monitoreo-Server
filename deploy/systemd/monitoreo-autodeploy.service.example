@@ -1,0 +1,18 @@
+[Unit]
+Description=Monitoreo Server - Verificación de auto-actualización
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+
+# Directorio raíz del repositorio (AJUSTAR RUTA)
+WorkingDirectory=/home/ubuntu/monitoreo-Server-main
+
+ExecStart=/home/ubuntu/monitoreo-Server-main/server/scripts/auto_deploy_watch.sh
+
+# Necesario porque update_prod.sh reinicia monitoreo-backend/monitoreo-agent vía sudo systemctl.
+# Configura en /etc/sudoers.d/ una regla que permita a este usuario ejecutar
+# systemctl restart/reload sobre esos dos servicios sin password (ver README).

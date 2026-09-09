@@ -377,6 +377,10 @@ def _wa_get_latest_metrics(server_id: str) -> Optional[Dict[str, Any]]:
                 "running_containers": row.docker_running,
                 "containers": json.loads(row.docker_containers or "[]"),
             },
+            "pm2": {
+                "running_count": row.pm2_running or 0,
+                "processes": json.loads(row.pm2_processes or "[]"),
+            },
             "services": json.loads(row.services or "[]"),
         }
         if any(
@@ -971,6 +975,32 @@ def ensure_swap_columns():
                     if "duplicate column name" not in str(e).lower():
                         print(f"Error migrando swap en {table}: {e}")
 
+def ensure_pm2_columns():
+    """Migración manual idempotente para las columnas de monitoreo de PM2.
+
+    `Base.metadata.create_all` solo crea tablas nuevas, nunca altera existentes,
+    así que las columnas de pm2 añadidas a metrics deben aplicarse por ALTER
+    en DBs ya desplegadas. Ver también scripts/migrate_v9.py.
+    """
+    try:
+        with Session(engine) as sess:
+            sess.execute(select(Metric.pm2_running).limit(1))
+        return  # Las columnas ya existen.
+    except Exception:
+        pass
+    print("Agregando columnas de pm2 a metrics...")
+    with engine.begin() as conn:
+        for stmt in [
+            "ALTER TABLE metrics ADD COLUMN pm2_running INTEGER",
+            "ALTER TABLE metrics ADD COLUMN pm2_processes TEXT",
+        ]:
+            try:
+                conn.exec_driver_sql(stmt)
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    print(f"Error migrando pm2 en metrics: {e}")
+
+
 def ensure_default_users(sess: Session):
     # Sincronizar usuarios permitidos desde config
     print("Verificando usuarios por defecto...")
@@ -1168,6 +1198,7 @@ def startup():
         ensure_environment_column()
         ensure_server_group_column()
         ensure_swap_columns()
+        ensure_pm2_columns()
         ensure_notification_settings()
         ensure_performance_indexes()
         ensure_admin_assignments()
@@ -2098,6 +2129,8 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
             disk_percent=payload.disk.percent,
             docker_running=payload.docker.running_containers,
             docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
+            pm2_running=payload.pm2.running_count if payload.pm2 else None,
+            pm2_processes=json.dumps([p.model_dump() for p in payload.pm2.processes]) if payload.pm2 else "[]",
             services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]",
             net_bytes_sent=network.bytes_sent if network else None,
             net_bytes_recv=network.bytes_recv if network else None,
@@ -2237,16 +2270,77 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                         
                         print(f"[ALERT] Service status change detected for {srv.server_id}: {msg}")
                         send_alert_email(
-                            server_id=payload.server_id, 
-                            alert_type="Cambio de Estado de Servicio", 
-                            current_value=0, 
-                            threshold=0, 
+                            server_id=payload.server_id,
+                            alert_type="Cambio de Estado de Servicio",
+                            current_value=0,
+                            threshold=0,
                             extra_recipients=recipients,
                             full_metrics=payload.model_dump(),
                             custom_message=msg
                         )
         except Exception as e:
             print(f"Error checking service alerts: {e}")
+
+        # --- Docker Container Monitoring Logic ---
+        try:
+            prev_cache = _cache.get(payload.server_id)
+            if prev_cache and len(prev_cache) > 0:
+                last_entry = prev_cache[-1]
+                last_docker = last_entry.get("docker") or {}
+                last_containers = {c["name"]: c for c in last_docker.get("containers", [])}
+                curr_containers = {c.name: c for c in payload.docker.containers}
+
+                def _is_up(status: str) -> bool:
+                    return (status or "").lower().startswith("up")
+
+                for name, curr_c in curr_containers.items():
+                    prev_c = last_containers.get(name)
+                    if prev_c and _is_up(prev_c.get("status")) != _is_up(curr_c.status):
+                        if _is_up(curr_c.status):
+                            msg = f"El contenedor Docker '{name}' volvió a estar activo (estado: {curr_c.status})."
+                        else:
+                            msg = f"El contenedor Docker '{name}' se detuvo (estado: {curr_c.status})."
+                        recipients, _ = get_alert_recipients(sess, srv, "docker_status")
+                        print(f"[ALERT] Docker status change detected for {srv.server_id}: {msg}")
+                        send_alert_email(
+                            server_id=payload.server_id,
+                            alert_type="Cambio de Estado de Contenedor Docker",
+                            current_value=0,
+                            threshold=0,
+                            extra_recipients=recipients,
+                            full_metrics=payload.model_dump(),
+                            custom_message=msg,
+                        )
+        except Exception as e:
+            print(f"Error checking docker alerts: {e}")
+
+        # --- PM2 Process Monitoring Logic ---
+        try:
+            if payload.pm2:
+                prev_cache = _cache.get(payload.server_id)
+                if prev_cache and len(prev_cache) > 0:
+                    last_entry = prev_cache[-1]
+                    last_pm2 = last_entry.get("pm2") or {}
+                    last_processes = {p["name"]: p for p in last_pm2.get("processes", [])}
+                    curr_processes = {p.name: p for p in payload.pm2.processes}
+
+                    for name, curr_p in curr_processes.items():
+                        prev_p = last_processes.get(name)
+                        if prev_p and prev_p.get("status") != curr_p.status:
+                            msg = f"El proceso PM2 '{name}' cambió de estado: {prev_p.get('status')} -> {curr_p.status}"
+                            recipients, _ = get_alert_recipients(sess, srv, "pm2_status")
+                            print(f"[ALERT] PM2 status change detected for {srv.server_id}: {msg}")
+                            send_alert_email(
+                                server_id=payload.server_id,
+                                alert_type="Cambio de Estado de Proceso PM2",
+                                current_value=0,
+                                threshold=0,
+                                extra_recipients=recipients,
+                                full_metrics=payload.model_dump(),
+                                custom_message=msg,
+                            )
+        except Exception as e:
+            print(f"Error checking pm2 alerts: {e}")
 
         # Actualizar caché en memoria
         try:
@@ -2257,6 +2351,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 "cpu": payload.cpu.model_dump(),
                 "disk": payload.disk.model_dump(),
                 "docker": payload.docker.model_dump(),
+                "pm2": payload.pm2.model_dump() if payload.pm2 else {"running_count": 0, "processes": []},
                 "services": [s.model_dump() for s in payload.services] if payload.services else [],
                 "network": payload.network.model_dump() if getattr(payload, "network", None) else None,
             }
@@ -2296,6 +2391,7 @@ def metrics_history(server_id: Optional[str] = None, limit: int = 100, user: dic
                     "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
                     "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
                     "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
+                    "pm2": {"running_count": r.pm2_running or 0, "processes": json.loads(r.pm2_processes or "[]")},
                     "services": json.loads(r.services or "[]"),
                 }
                 if any(

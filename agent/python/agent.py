@@ -12,7 +12,7 @@ import psutil
 import requests
 
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 
 def read_memory():
     vm = psutil.virtual_memory()
@@ -82,8 +82,9 @@ def read_network():
 def read_docker():
     try:
         # 1. Obtener metadatos de contenedores (ID, Name, Image, Status)
-        # Usamos docker ps para ver los activos.
-        ps_out = subprocess.check_output(["docker", "ps", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}"], text=True)
+        # Usamos "docker ps -a" (incluye detenidos) para poder detectar cuando
+        # un contenedor se apaga en vez de que simplemente desaparezca del listado.
+        ps_out = subprocess.check_output(["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}"], text=True)
         containers_map = {}
         for line in ps_out.strip().split("\n"):
             if not line: continue
@@ -127,15 +128,42 @@ def read_docker():
                         pass
 
         container_list = list(containers_map.values())
-        return {"running_containers": len(container_list), "containers": container_list}
+        running_count = sum(1 for c in container_list if c["status"].lower().startswith("up"))
+        return {"running_containers": running_count, "containers": container_list}
     except Exception:
-        # Fallback simple
+        # Fallback simple: solo contenedores activos, sin metadatos de detenidos.
         try:
             out = subprocess.check_output(["docker", "ps", "--format", "{{.Names}}"], text=True)
             names = [n for n in out.strip().split("\n") if n]
             return {"running_containers": len(names), "containers": [{"name": n, "status": "running"} for n in names]}
         except Exception:
             return {"running_containers": 0, "containers": []}
+
+
+def read_pm2():
+    try:
+        out = subprocess.check_output(["pm2", "jlist"], text=True)
+        data = json.loads(out)
+        processes = []
+        running = 0
+        for p in data:
+            env = p.get("pm2_env", {}) or {}
+            monit = p.get("monit", {}) or {}
+            status = env.get("status", "unknown")
+            if status == "online":
+                running += 1
+            processes.append({
+                "name": p.get("name", ""),
+                "status": status,
+                "pid": p.get("pid"),
+                "cpu": float(monit.get("cpu", 0) or 0),
+                "mem": round(float(monit.get("memory", 0) or 0) / (1024 ** 2), 1),
+                "restarts": env.get("restart_time", 0),
+            })
+        return {"running_count": running, "processes": processes}
+    except Exception:
+        # pm2 no instalado o sin procesos gestionados: no es un error del agente.
+        return {"running_count": 0, "processes": []}
 
 
 def read_services():
@@ -203,6 +231,7 @@ def payload(server_id: str):
         "cpu": read_cpu(),
         "disk": read_disk(),
         "docker": read_docker(),
+        "pm2": read_pm2(),
         "services": read_services(),
         "network": read_network(),
         "agent_version": AGENT_VERSION,

@@ -19,6 +19,20 @@ function useQuery() {
   return { demo: false };
 }
 
+// Asegura que configuraciones de sidebar guardadas antes de agregar una sección
+// nueva (p. ej. 'pm2') la incluyan igualmente, sin perder el orden/visibilidad ya elegidos.
+function mergeSidebarSections(cfg) {
+  if (!cfg || !Array.isArray(cfg.sections)) return cfg;
+  if (!cfg.sections.some(s => s.id === 'pm2')) {
+    const idx = cfg.sections.findIndex(s => s.id === 'containers');
+    const entry = { id: 'pm2', label: '🔧 Monitor PM2', visible: true };
+    const sections = [...cfg.sections];
+    if (idx >= 0) sections.splice(idx + 1, 0, entry); else sections.push(entry);
+    return { ...cfg, sections };
+  }
+  return cfg;
+}
+
 function getApiBase() {
   const params = new URLSearchParams(window.location.search);
   const override = params.get('api');
@@ -262,6 +276,64 @@ function ContainerMonitor({ containers }) {
                         ),
                         React.createElement('td', { style: { padding: 10 } }, c.cpu || 0),
                         React.createElement('td', { style: { padding: 10 } }, c.mem || 0)
+                    );
+                })
+            )
+        )
+    )
+  );
+}
+
+function Pm2Monitor({ pm2 }) {
+  const [search, setSearch] = useState('');
+  const processes = (pm2 && pm2.processes) || [];
+
+  const filtered = processes.filter(p => {
+      const term = (search || '').toLowerCase();
+      const name = (p && p.name ? String(p.name) : '').toLowerCase();
+      return name.includes(term);
+  });
+
+  return React.createElement('div', { className: 'card' },
+    React.createElement('div', { className: 'card-title' }, '🔧 Monitor de Procesos PM2'),
+    React.createElement('div', { style: { display: 'flex', gap: 10, marginBottom: 15 } },
+        React.createElement('input', {
+            placeholder: 'Buscar proceso...',
+            value: search,
+            onChange: e => setSearch(e.target.value),
+            style: { flex: 1, padding: 8, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-body)', color: 'var(--text)' }
+        })
+    ),
+    React.createElement('div', { style: { overflowX: 'auto' } },
+        React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+            React.createElement('thead', null,
+                React.createElement('tr', { style: { borderBottom: '1px solid var(--border)', textAlign: 'left' } },
+                    React.createElement('th', { style: { padding: 10 } }, 'Nombre'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Estado'),
+                    React.createElement('th', { style: { padding: 10 } }, 'PID'),
+                    React.createElement('th', { style: { padding: 10 } }, 'CPU %'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Mem (MB)'),
+                    React.createElement('th', { style: { padding: 10 } }, 'Reinicios')
+                )
+            ),
+            React.createElement('tbody', null,
+                processes.length === 0
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 6, style: { padding: 20, textAlign: 'center' } }, 'No hay procesos PM2 reportados (¿PM2 instalado en este servidor?)'))
+                : filtered.map(p => {
+                    const status = p && p.status ? String(p.status) : '';
+                    const isOnline = status.toLowerCase() === 'online';
+                    return React.createElement('tr', { key: p.name, style: { borderBottom: '1px solid var(--border)' } },
+                        React.createElement('td', { style: { padding: 10, fontWeight: 500 } }, p && p.name),
+                        React.createElement('td', { style: { padding: 10 } },
+                             React.createElement('span', { className: 'badge', style: {
+                                background: isOnline ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                color: isOnline ? '#10b981' : '#ef4444'
+                             } }, status || '-')
+                        ),
+                        React.createElement('td', { style: { padding: 10 } }, p.pid ?? '-'),
+                        React.createElement('td', { style: { padding: 10 } }, p.cpu || 0),
+                        React.createElement('td', { style: { padding: 10 } }, p.mem || 0),
+                        React.createElement('td', { style: { padding: 10 } }, p.restarts ?? 0)
                     );
                 })
             )
@@ -938,7 +1010,7 @@ function AlertRulesManager() {
     React.createElement('div', { className: 'card-title' }, 'Reglas de Ruteo de Alertas'),
     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 20 } },
       React.createElement('select', { value: newRule.alert_type, onChange: e => setNewRule({...newRule, alert_type: e.target.value}) },
-        ['cpu', 'memory', 'disk', 'swap', 'offline', 'service_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
+        ['cpu', 'memory', 'disk', 'swap', 'offline', 'service_status', 'docker_status', 'pm2_status'].map(m => React.createElement('option', { key: m, value: m }, m.toUpperCase()))
       ),
       React.createElement('select', { value: newRule.server_scope, onChange: e => setNewRule({...newRule, server_scope: e.target.value}) },
         React.createElement('option', { value: 'global' }, 'Global'),
@@ -1278,7 +1350,7 @@ function App() {
   const [sidebarConfig, setSidebarConfig] = useState(() => {
       // 1. Try from userInfo (backend persistence)
       const u = getUserInfo();
-      if (u && u.sidebar_config) return u.sidebar_config;
+      if (u && u.sidebar_config) return mergeSidebarSections(u.sidebar_config);
 
       // 2. Try from localStorage (legacy/fallback)
       try {
@@ -1289,6 +1361,7 @@ function App() {
                   return {
                       sections: [
                           { id: 'containers', label: '🐳 Monitor Contenedores', visible: parsed.showContainers !== false },
+                          { id: 'pm2', label: '🔧 Monitor PM2', visible: parsed.showPm2 !== false },
                           { id: 'services', label: '⚙️ Gestión Servicios', visible: parsed.showServices !== false },
                           { id: 'postman', label: '📊 Postman Dashboard', visible: parsed.showPostman !== false }
                       ],
@@ -1298,14 +1371,15 @@ function App() {
               if (!parsed.general) {
                   parsed.general = { autoCollapseSidebar: true };
               }
-              return parsed;
+              return mergeSidebarSections(parsed);
           }
       } catch {}
-      
+
       // 3. Default
       return {
           sections: [
               { id: 'containers', label: '🐳 Monitor Contenedores', visible: true },
+              { id: 'pm2', label: '🔧 Monitor PM2', visible: true },
               { id: 'services', label: '⚙️ Gestión Servicios', visible: true },
               { id: 'postman', label: '📊 Postman Dashboard', visible: true }
           ],
@@ -1410,7 +1484,7 @@ function App() {
         localStorage.setItem('dashboard_token', res.token);
         localStorage.setItem('user_info', JSON.stringify(res));
         setUserInfo(res);
-        if (res.sidebar_config) setSidebarConfig(res.sidebar_config);
+        if (res.sidebar_config) setSidebarConfig(mergeSidebarSections(res.sidebar_config));
         setAuthed(true);
       }
     } catch (e) { setLoginError(e.message); }
@@ -1501,7 +1575,7 @@ function App() {
         );
     }
 
-    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, swap:{used:0,total:0,percent:0}, docker:{running_containers:0}, network:{bytes_sent:0,bytes_recv:0} };
+    const latest = history[history.length - 1] || { cpu:{total:0}, memory:{used:0,total:0}, disk:{percent:0,used:0,total:0}, swap:{used:0,total:0,percent:0}, docker:{running_containers:0}, pm2:{running_count:0,processes:[]}, network:{bytes_sent:0,bytes_recv:0} };
     const selectedServer = servers.find(s => s.server_id === selected) || {};
     const isOnline = selectedServer.status === 'online';
     const statusLabel = selectedServer.status === 'offline' ? 'Offline' : (selectedServer.status === 'online' ? 'Online' : 'Sin datos');
@@ -1560,6 +1634,7 @@ function App() {
 
         (sidebarConfig.sections || []).filter(s => s.visible).map(s => {
             if (s.id === 'containers') return React.createElement(ContainerMonitor, { key: s.id, containers: latest.docker?.containers });
+            if (s.id === 'pm2') return React.createElement(Pm2Monitor, { key: s.id, pm2: latest.pm2 });
             if (s.id === 'services') return React.createElement(ServiceManager, { key: s.id, services: latest.services, serverId: selected });
             if (s.id === 'postman') return React.createElement(DataMonitoringDashboard, { key: s.id, currentServer: servers.find(s => s.server_id === selected), userInfo });
             return null;

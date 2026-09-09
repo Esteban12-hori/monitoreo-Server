@@ -10,7 +10,8 @@ Este agente es un script ligero en Python diseñado para recolectar métricas de
   - Uso de CPU (Total y por núcleo).
   - Uso de Memoria RAM.
   - Uso de Disco.
-  - Estado de contenedores Docker (si está instalado).
+  - Estado de contenedores Docker (activo/detenido, si está instalado).
+  - Estado de procesos PM2 (online/detenido, si PM2 está instalado).
 
 ---
 

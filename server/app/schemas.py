@@ -30,7 +30,10 @@ class DiskSchema(BaseModel):
 
 
 class DockerContainerSchema(BaseModel):
+    id: Optional[str] = None
     name: str
+    image: Optional[str] = None
+    status: str = "unknown"
     cpu: Optional[float] = None
     mem: Optional[float] = None
 
@@ -38,6 +41,20 @@ class DockerContainerSchema(BaseModel):
 class DockerSchema(BaseModel):
     running_containers: int
     containers: List[DockerContainerSchema] = []
+
+
+class Pm2ProcessSchema(BaseModel):
+    name: str
+    status: str = "unknown"
+    pid: Optional[int] = None
+    cpu: Optional[float] = None
+    mem: Optional[float] = None
+    restarts: Optional[int] = None
+
+
+class Pm2Schema(BaseModel):
+    running_count: int = 0
+    processes: List[Pm2ProcessSchema] = []
 
 
 class NetworkSchema(BaseModel):
@@ -88,6 +105,7 @@ class MetricsIngestSchema(BaseModel):
     cpu: CpuSchema
     disk: DiskSchema
     docker: DockerSchema
+    pm2: Optional[Pm2Schema] = None
     services: Optional[List[ServiceSchema]] = []
     network: Optional[NetworkSchema] = None
     timestamp: Optional[str] = None
@@ -203,7 +221,7 @@ class AlertRecipientCreateSchema(BaseModel):
 
 
 class AlertRuleBase(BaseModel):
-    alert_type: str = Field(..., pattern="^(cpu|memory|disk|swap|offline|service_status)$")
+    alert_type: str = Field(..., pattern="^(cpu|memory|disk|swap|offline|service_status|docker_status|pm2_status)$")
     server_scope: str = Field(..., pattern="^(global|server|group)$")
     target_id: Optional[str] = None
     emails: List[EmailStr]
