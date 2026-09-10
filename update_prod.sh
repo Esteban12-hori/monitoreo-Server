@@ -29,22 +29,25 @@ pip install -r server/requirements.txt
 
 # 3. Aplicar migraciones de base de datos
 echo "🗄️  3. Aplicando migraciones de base de datos..."
+# Usamos python3 si existe (caso común en servidores sin alias 'python'), si no caemos a 'python'.
+PYTHON_BIN="python3"
+command -v python3 >/dev/null 2>&1 || PYTHON_BIN="python"
 # Aseguramos que las tablas nuevas y columnas se creen
-python server/scripts/migrate_v3.py || true
+"$PYTHON_BIN" server/scripts/migrate_v3.py || true
 if [ -f "server/scripts/migrate_v5.py" ]; then
-    python server/scripts/migrate_v5.py || true
+    "$PYTHON_BIN" server/scripts/migrate_v5.py || true
 fi
 if [ -f "server/scripts/migrate_v6.py" ]; then
-    python server/scripts/migrate_v6.py || true
+    "$PYTHON_BIN" server/scripts/migrate_v6.py || true
 fi
 if [ -f "server/scripts/migrate_v7.py" ]; then
-    python server/scripts/migrate_v7.py || true
+    "$PYTHON_BIN" server/scripts/migrate_v7.py || true
 fi
 if [ -f "server/scripts/migrate_v8.py" ]; then
-    python server/scripts/migrate_v8.py || true
+    "$PYTHON_BIN" server/scripts/migrate_v8.py || true
 fi
 if [ -f "server/scripts/migrate_v9.py" ]; then
-    python server/scripts/migrate_v9.py || true
+    "$PYTHON_BIN" server/scripts/migrate_v9.py || true
 fi
 
 # 4. Reiniciar el servicio para aplicar cambios de código

@@ -2290,16 +2290,38 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 last_containers = {c["name"]: c for c in last_docker.get("containers", [])}
                 curr_containers = {c.name: c for c in payload.docker.containers}
 
-                def _is_up(status: str) -> bool:
-                    return (status or "").lower().startswith("up")
+                def _container_state(status: str) -> str:
+                    s = (status or "").lower()
+                    if "unhealthy" in s:
+                        return "unhealthy"
+                    if s.startswith("up"):
+                        return "up"
+                    return "down"
+
+                # Descripción por transición de estado (prev -> curr). "unhealthy" es el
+                # estado que reporta el healthcheck de Docker cuando el contenedor sigue
+                # arriba pero no pasa su chequeo (ej. "Up 5 minutes (unhealthy)").
+                _STATE_DESCRIPTIONS = {
+                    ("up", "down"): "se detuvo",
+                    ("unhealthy", "down"): "se detuvo (venía unhealthy)",
+                    ("down", "up"): "volvió a estar activo",
+                    ("unhealthy", "up"): "volvió a estar saludable (healthy)",
+                    ("up", "unhealthy"): "está unhealthy (no pasa el healthcheck)",
+                    ("down", "unhealthy"): "arrancó pero está unhealthy (no pasa el healthcheck)",
+                }
 
                 for name, curr_c in curr_containers.items():
                     prev_c = last_containers.get(name)
-                    if prev_c and _is_up(prev_c.get("status")) != _is_up(curr_c.status):
-                        if _is_up(curr_c.status):
-                            msg = f"El contenedor Docker '{name}' volvió a estar activo (estado: {curr_c.status})."
-                        else:
-                            msg = f"El contenedor Docker '{name}' se detuvo (estado: {curr_c.status})."
+                    if not prev_c:
+                        continue
+                    prev_state = _container_state(prev_c.get("status"))
+                    curr_state = _container_state(curr_c.status)
+                    if prev_state != curr_state:
+                        desc = _STATE_DESCRIPTIONS.get(
+                            (prev_state, curr_state),
+                            f"cambió de estado: {prev_c.get('status')} -> {curr_c.status}",
+                        )
+                        msg = f"El contenedor Docker '{name}' {desc} (estado: {curr_c.status})."
                         recipients, _ = get_alert_recipients(sess, srv, "docker_status")
                         print(f"[ALERT] Docker status change detected for {srv.server_id}: {msg}")
                         send_alert_email(
