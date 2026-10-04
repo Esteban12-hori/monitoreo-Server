@@ -855,6 +855,14 @@ function ServerGroupManager() {
     } catch (e) { alert(e.message); }
   };
 
+  const unlinkServer = async (serverId) => {
+    if (!confirm(`¿Desvincular "${serverId}" del panel?\n\nEsto borra el servidor y su historial del panel aunque no tengas acceso al agente remoto. Esta acción no se puede deshacer.`)) return;
+    try {
+      await fetchJSON(`/api/admin/servers/${encodeURIComponent(serverId)}`, { method: 'DELETE' });
+      load();
+    } catch (e) { alert(e.message); }
+  };
+
   const updateServerGroup = async (serverId, groupName) => {
     try {
       setSavingServer(serverId);
@@ -924,12 +932,13 @@ function ServerGroupManager() {
                 React.createElement('th', { style: { padding: 8 } }, 'Servidor'),
                 React.createElement('th', { style: { padding: 8 } }, 'Grupo'),
                 React.createElement('th', { style: { padding: 8 } }, 'Conectividad'),
-                React.createElement('th', { style: { padding: 8 } }, 'Estado')
+                React.createElement('th', { style: { padding: 8 } }, 'Estado'),
+                React.createElement('th', { style: { padding: 8 } }, 'Acciones')
               )
             ),
             React.createElement('tbody', null,
               servers.length === 0
-                ? React.createElement('tr', null, React.createElement('td', { colSpan: 4, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
+                ? React.createElement('tr', null, React.createElement('td', { colSpan: 5, style: { padding: 16, textAlign: 'center', color: 'var(--text-muted)' } }, 'Sin servidores registrados'))
                 : servers.map(s =>
                     React.createElement('tr', { key: s.server_id, style: { borderBottom: '1px solid var(--border)' } },
                       React.createElement('td', { style: { padding: 8 } }, s.server_id),
@@ -949,6 +958,14 @@ function ServerGroupManager() {
                       ),
                       React.createElement('td', { style: { padding: 8, fontSize: '0.8rem', color: 'var(--text-muted)' } },
                         savingServer === s.server_id ? 'Guardando...' : 'Listo'
+                      ),
+                      React.createElement('td', { style: { padding: 8 } },
+                        React.createElement('button', {
+                          className: 'secondary',
+                          title: 'Desvincular servidor del panel',
+                          style: { padding: '2px 8px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' },
+                          onClick: () => unlinkServer(s.server_id)
+                        }, '🗑️ Desvincular')
                       )
                     )
                   )
@@ -1497,6 +1514,17 @@ function App() {
     setUserInfo(null);
   };
 
+  const handleUnlinkServer = async (serverId) => {
+    if (!window.confirm(`¿Desvincular "${serverId}" del panel?\n\nEsto borra el servidor y su historial del panel aunque no tengas acceso al agente remoto. Esta acción no se puede deshacer.`)) return;
+    try {
+      await fetchJSON(`/api/admin/servers/${encodeURIComponent(serverId)}`, { method: 'DELETE' });
+      if (selected === serverId) setSelected('');
+      await load();
+    } catch (e) {
+      alert(`No se pudo desvincular el servidor: ${e.message}`);
+    }
+  };
+
   if (!authed) {
     return React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg-body)' } },
         React.createElement('div', { className: 'card', style: { width: 400, margin: 0 } },
@@ -1552,14 +1580,20 @@ function App() {
                     servers.map(s => {
                         const statusText = s.status === 'online' ? '🟢 Online' : s.status === 'offline' ? '🔴 Offline' : '⚪ Sin datos';
                         const uptimeText = s.status === 'online' && s.uptime ? ` · ${s.uptime}` : '';
-                        return React.createElement('div', { 
-                            key: s.server_id, 
+                        return React.createElement('div', {
+                            key: s.server_id,
                             className: 'card',
-                            style: { cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border)' },
+                            style: { cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border)', position: 'relative' },
                             onMouseEnter: (e) => e.currentTarget.style.borderColor = 'var(--primary)',
                             onMouseLeave: (e) => e.currentTarget.style.borderColor = 'var(--border)',
                             onClick: () => setSelected(s.server_id)
                         },
+                            userInfo?.is_admin && React.createElement('button', {
+                                className: 'secondary',
+                                title: 'Desvincular servidor del panel',
+                                style: { position: 'absolute', top: 10, right: 10, padding: '2px 7px', fontSize: '0.8rem', color: 'var(--danger)', borderColor: 'var(--danger)' },
+                                onClick: (e) => { e.stopPropagation(); handleUnlinkServer(s.server_id); }
+                            }, '🗑️'),
                             React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
                                 React.createElement('div', { style: { fontWeight: 'bold', fontSize: '1.1rem' } }, s.server_id),
                                 React.createElement('span', { style: { fontSize: '1.5rem' } }, '🖥️')
@@ -1608,8 +1642,13 @@ function App() {
                 React.createElement('span', { style: { fontSize: '0.8rem', color: 'var(--text-muted)' } }, servers.find(s=>s.server_id===selected)?.group_name || '')
             ),
             React.createElement('span', { className: 'badge', style: { background: statusBg, padding: '4px 8px', borderRadius: 4, fontSize: '0.8rem', marginLeft: 10, color: statusColor } }, statusLabel),
-            React.createElement('div', { style: { marginLeft: 'auto' } },
-                React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales')
+            React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: 10 } },
+                React.createElement('button', { className: 'secondary', onClick: () => setEditingThresholds(selected) }, 'Configurar Umbrales'),
+                userInfo?.is_admin && React.createElement('button', {
+                    className: 'secondary',
+                    style: { color: 'var(--danger)', borderColor: 'var(--danger)' },
+                    onClick: () => handleUnlinkServer(selected)
+                }, '🗑️ Desvincular Servidor')
             )
         ),
 

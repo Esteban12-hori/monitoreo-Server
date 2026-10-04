@@ -1494,6 +1494,12 @@ def delete_user(user_id: int, user: dict = Depends(require_admin)):
         u = sess.get(User, user_id)
         if not u:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        # Borrar filas dependientes con FK a users.id que no tienen cascada ORM,
+        # para evitar violar la constraint FK (sesiones activas, config de monitoreo).
+        sess.execute(delete(UserSession).where(UserSession.user_id == user_id))
+        sess.execute(delete(DataMonitoringUserConfig).where(DataMonitoringUserConfig.user_id == user_id))
+
         sess.delete(u)
         sess.commit()
         return {"status": "deleted"}
@@ -1659,17 +1665,29 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
 
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):
+    """Desvincula un servidor del panel: borra el registro y todos sus datos
+    asociados (métricas, umbrales, config, comandos pendientes), aunque el
+    agente remoto ya no esté accesible."""
     with Session(engine) as sess:
         srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
         if not srv:
             raise HTTPException(status_code=404, detail="Servidor no encontrado")
+
+        # Borrar filas dependientes que tienen FK a servers.server_id y no
+        # cuentan con cascada ORM, para evitar violar la constraint FK.
+        sess.execute(delete(Metric).where(Metric.server_id == server_id))
+        sess.execute(delete(DataMonitoringServerConfig).where(DataMonitoringServerConfig.server_id == server_id))
+        sess.execute(delete(AgentCommand).where(AgentCommand.server_id == server_id))
+        sess.execute(delete(ServerThreshold).where(ServerThreshold.server_id == server_id))
+        sess.execute(delete(AlertRule).where(AlertRule.server_scope == "server", AlertRule.target_id == server_id))
+
         sess.delete(srv)
         sess.commit()
-        
-        # Limpiar caché si existe
-        if server_id in _cache:
-            del _cache[server_id]
-            
+
+        # Limpiar cachés en memoria si existen
+        _cache.pop(server_id, None)
+        _threshold_cache.pop(server_id, None)
+
         return {"status": "deleted", "server_id": server_id}
 
 
