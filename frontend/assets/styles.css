@@ -1,224 +1,759 @@
+/* ==========================================================================
+   ServPulse — Sistema de diseño del dashboard
+   Sin build step. Sólo CSS: los nombres de clase y las variables que app.js
+   usa (--text, --primary-rgb, --bg-element, etc.) se respetan tal cual.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Tokens
+   -------------------------------------------------------------------------- */
 :root {
-  --bg-body: #0f172a;
-  --bg-sidebar: #1e293b;
-  --bg-card: #1e293b;
-  --bg-element: #334155;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
+  /* Superficies (de más profunda a más elevada) */
+  --bg-body: #080d18;
+  --bg-sidebar: #0c1322;
+  --bg-card: #111a2b;
+  --bg-element: #1b2740;
+  --bg-input: #0a1120;
+  --bg-hover: #16233a;
+
+  /* Texto */
+  --text-main: #e8eefb;
+  --text: #e8eefb;            /* app.js usa var(--text); antes no existía */
+  --text-muted: #93a3bd;
+  --text-subtle: #6b7c99;
+  --text-inverse: #06101f;
+
+  /* Marca */
   --primary: #38bdf8;
   --primary-hover: #0ea5e9;
-  --danger: #ef4444;
+  --primary-rgb: 56, 189, 248; /* app.js lo usa; antes no existía */
+  --primary-soft: rgba(56, 189, 248, 0.12);
+  --primary-ring: rgba(56, 189, 248, 0.35);
+
+  /* Estado */
   --success: #22c55e;
+  --success-rgb: 34, 197, 94;
   --warning: #f59e0b;
-  --border: #334155;
-  --sidebar-width: 260px;
-  --header-height: 64px;
+  --warning-rgb: 245, 158, 11;
+  --danger: #ef4444;
+  --danger-rgb: 239, 68, 68;
+  --neutral: #64748b;
+  --neutral-rgb: 100, 116, 139;
+
+  --success-soft: rgba(34, 197, 94, 0.13);
+  --warning-soft: rgba(245, 158, 11, 0.13);
+  --danger-soft: rgba(239, 68, 68, 0.13);
+
+  /* Líneas */
+  --border: #223049;
+  --border-soft: #1a2537;
+  --border-strong: #2e4062;
+
+  /* Geometría */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  /* Espaciado */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Sombras */
+  --shadow-sm: 0 1px 2px rgba(2, 6, 18, 0.4);
+  --shadow: 0 8px 24px -8px rgba(2, 6, 18, 0.7);
+  --shadow-lg: 0 24px 60px -20px rgba(2, 6, 18, 0.85);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* Layout */
+  --sidebar-width: 248px;
+  --sidebar-collapsed-width: 68px;
+  --header-height: 60px;
+
+  --transition: 160ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-* { box-sizing: border-box; }
+/* --------------------------------------------------------------------------
+   2. Base
+   -------------------------------------------------------------------------- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background-color: var(--bg-body);
-  color: var(--text-main);
+  min-height: 100vh;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  color: var(--text-main);
+  background-color: var(--bg-body);
+  /* Halo muy sutil para que el fondo no quede plano */
+  background-image:
+    radial-gradient(1100px 600px at 12% -8%, rgba(56, 189, 248, 0.07), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(99, 102, 241, 0.06), transparent 55%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Layout */
+/* Al abrir un modal no dejamos scrolling el fondo detrás */
+body:has(.modal-overlay) { overflow: hidden; }
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+/* app.js usa h2 sin clase para "Mis Servidores" */
+.main-content > div > h2,
+.main-content h2 {
+  font-size: 1.4rem;
+  margin: 0 0 var(--space-5) !important;
+  color: var(--text-main);
+}
+
+/* --------------------------------------------------------------------------
+   3. Layout
+   -------------------------------------------------------------------------- */
 .app-container {
   display: flex;
   min-height: 100vh;
 }
 
-.sidebar {
-  width: var(--sidebar-width);
-  background-color: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  height: 100vh;
-  top: 0;
-  left: 0;
-  z-index: 50;
-  transition: width 0.3s ease;
-}
-
 .main-content {
-  margin-left: var(--sidebar-width);
   flex: 1;
-  padding: 2.5rem 3rem;
   width: 100%;
-  transition: margin-left 0.3s ease;
-  max-width: 1440px;
+  max-width: 1560px;
+  margin-left: var(--sidebar-width);
   margin-right: auto;
-}
-
-.sidebar.sidebar-collapsed {
-  width: 72px;
+  padding: var(--space-6) var(--space-6) var(--space-6);
+  min-width: 0; /* permite que las tablas con scroll no revienten el grid */
+  transition: margin-left var(--transition);
 }
 
 .main-content.main-content-collapsed {
-  margin-left: 72px;
+  margin-left: var(--sidebar-collapsed-width);
 }
 
-/* Sidebar Components */
+/* --------------------------------------------------------------------------
+   4. Sidebar
+   -------------------------------------------------------------------------- */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width);
+  height: 100vh;
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-inset);
+  transition: width var(--transition);
+  overflow: hidden;
+}
+
+.sidebar.sidebar-collapsed {
+  width: var(--sidebar-collapsed-width);
+}
+
 .sidebar-header {
-  height: var(--header-height);
   display: flex;
   align-items: center;
-  padding: 0 1.5rem;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-2);
+  height: var(--header-height);
+  flex-shrink: 0;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
   font-weight: 700;
-  font-size: 1.25rem;
-  color: var(--primary);
+  font-size: 1.05rem;
   letter-spacing: -0.025em;
+  color: var(--primary);
+  white-space: nowrap;
 }
 
 .sidebar-nav {
-  padding: 1.5rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 2px;
+  padding: var(--space-4) var(--space-3);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+
+/* Icono del logo: que no se aplaste al contraer */
+.sidebar-header span:first-child { font-size: 1.15rem; line-height: 1; }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
+  gap: var(--space-3);
+  padding: 9px var(--space-3);
+  border-radius: var(--radius);
   color: var(--text-muted);
-  text-decoration: none;
-  transition: all 0.2s;
-  cursor: pointer;
   font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--transition), color var(--transition);
 }
 
-.nav-item:hover, .nav-item.active {
+.nav-item:hover {
   background-color: var(--bg-element);
   color: var(--text-main);
 }
 
 .nav-item.active {
-  background-color: rgba(56, 189, 248, 0.1);
+  background-color: var(--primary-soft);
   color: var(--primary);
+  font-weight: 600;
 }
+
+/* Acento lateral que marca la sección activa */
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--primary);
+}
+
+/* Colapsado: sólo icono, centrado */
+.sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sidebar-collapsed .nav-item::before { left: -1px; }
 
 .sidebar-footer {
   margin-top: auto;
-  padding: 1.5rem;
-  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-soft);
 }
 
-/* Components */
-.card {
-  background-color: var(--bg-card);
-  border-radius: 1rem;
-  padding: 1.75rem;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.5);
-  margin-bottom: 1.75rem;
+.sidebar-footer button {
+  justify-content: center;
+  white-space: nowrap;
 }
+
+/* El nombre de usuario no debe empujar el layout al contraer */
+.sidebar-collapsed .sidebar-footer > div { display: none; }
+
+/* --------------------------------------------------------------------------
+   5. Tarjetas
+   -------------------------------------------------------------------------- */
+.card {
+  position: relative;
+  max-width: 100%;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+  box-shadow: var(--shadow), var(--shadow-inset);
+}
+
+.card:last-child { margin-bottom: 0; }
+
+.card-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+}
+
+/* MetricCard: app.js fija color/tamaño en línea, por eso needs !important */
+.card > .card-title[style*="text-muted"] {
+  margin-bottom: var(--space-2) !important;
+  font-size: 0.78rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle) !important;
+}
+
+.card > div[style*="font-size: 2rem"] {
+  margin-bottom: var(--space-1) !important;
+  font-size: 1.55rem !important;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  /* "482.00↑ / 1907.00↓ GB" es largo: que parta en 2 líneas y no desborde */
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.card > div[style*="font-size: 0.875rem"] { color: var(--text-subtle); }
 
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1.5rem;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
 }
 
-.card-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text-main);
-  margin: 0;
-}
+/* Las cabeceras de las tarjetas de monitor llevan emoji + título */
+.card > .card-title::first-letter { font-size: 1.05em; }
 
+/* Rejillas */
 .grid-3 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 1.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(212px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
 }
 
 .grid-2 {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1.75rem;
-  margin-bottom: 1.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
 }
 
-@media (max-width: 1024px) {
-  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+/* Las tarjetas de métrica no necesitan el padding grande de .card */
+.grid-3 > .card,
+.grid-2 > .card { margin-bottom: 0; }
+
+/* --------------------------------------------------------------------------
+   6. Animación de entrada (la clase se usaba pero no existía)
+
+   Sólo animamos `opacity`. Un `transform` aquí convertiría a `.fade-in` en
+   bloque contenedor de los `position: fixed` descendientes, y como app.js
+   renderiza los modales DENTRO de `.fade-in`, el overlay se dimensionaría
+   con toda la altura de la página y el diálogo quedaría fuera de pantalla.
+   -------------------------------------------------------------------------- */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
-@media (max-width: 768px) {
-  .grid-3, .grid-2 { grid-template-columns: 1fr; }
-  .app-container { flex-direction: column; }
-  .sidebar { width: 100%; height: auto; position: relative; }
-  .sidebar.sidebar-collapsed { width: 100%; }
-  .main-content, .main-content.main-content-collapsed { margin-left: 0; padding: 1rem; }
-}
+.fade-in { animation: fade-in 200ms ease both; }
 
-/* Elements */
+/* --------------------------------------------------------------------------
+   7. Botones
+   -------------------------------------------------------------------------- */
 button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 1rem;
-  border-radius: 0.5rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
+  gap: 6px;
+  padding: 8px 14px;
+  min-height: 34px;
   border: 1px solid transparent;
+  border-radius: var(--radius);
   background-color: var(--primary);
-  color: #fff;
-  font-size: 0.875rem;
+  color: var(--text-inverse);
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--transition), border-color var(--transition),
+    color var(--transition), box-shadow var(--transition), transform var(--transition);
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background-color: var(--primary-hover);
+}
+
+button:active:not(:disabled) { transform: translateY(1px); }
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 button.secondary {
   background-color: var(--bg-element);
   color: var(--text-main);
-  border: 1px solid var(--border);
+  border-color: var(--border);
 }
 
-button.secondary:hover {
-  background-color: var(--border);
+button.secondary:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--border-strong);
 }
 
 button.danger {
-  background-color: rgba(239, 68, 68, 0.1);
+  background-color: var(--danger-soft);
   color: var(--danger);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-color: rgba(var(--danger-rgb), 0.32);
 }
 
-button.danger:hover {
-  background-color: rgba(239, 68, 68, 0.2);
+button.danger:hover:not(:disabled) {
+  background-color: rgba(var(--danger-rgb), 0.22);
+  border-color: rgba(var(--danger-rgb), 0.5);
 }
 
-input, select {
-  background-color: var(--bg-body);
-  border: 1px solid var(--border);
-  color: var(--text-main);
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
+/* app.js pinta varios botones destructivos con sólo el color inline */
+button[style*="--danger"] {
+  background-color: transparent !important;
+  color: var(--danger) !important;
+  border-color: rgba(var(--danger-rgb), 0.38) !important;
+}
+
+button[style*="--danger"]:hover:not(:disabled) {
+  background-color: rgba(var(--danger-rgb), 0.16) !important;
+  border-color: rgba(var(--danger-rgb), 0.6) !important;
+}
+
+/* --------------------------------------------------------------------------
+   8. Formularios
+   -------------------------------------------------------------------------- */
+input,
+select,
+textarea {
   width: 100%;
-  font-size: 0.875rem;
+  min-height: 36px;
+  padding: 8px 11px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  background-color: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--transition), box-shadow var(--transition),
+    background-color var(--transition);
 }
 
-input:focus, select:focus {
+input::placeholder { color: var(--text-subtle); opacity: 1; }
+
+input:hover:not(:disabled),
+select:hover:not(:disabled) { border-color: var(--border-strong); }
+
+input:focus,
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+  background-color: var(--bg-body);
 }
 
-/* Typography */
+input:disabled,
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Los checkbox/radio nunca deben ocupar todo el ancho */
+input[type='checkbox'],
+input[type='radio'] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  min-width: 0;
+  flex-shrink: 0;
+  padding: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+input[type='checkbox'] {
+  border-radius: 4px;
+  background-color: var(--bg-input);
+}
+
+input[type='number'] { font-variant-numeric: tabular-nums; }
+
+/* Los selects dentro de una barra de herramientas se dimensionan al contenido */
+[style*='display: flex'] > select { max-width: 240px; }
+
+label {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+label[style*='cursor: pointer'] {
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------
+   9. Tablas
+   app.js pone width:100% y borderCollapse inline en cada <table>
+   -------------------------------------------------------------------------- */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.85rem;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 10px 12px !important;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-subtle);
+  background-color: var(--bg-element);
+  border-bottom: 1px solid var(--border);
+}
+
+tbody td {
+  padding: 10px 12px !important;
+  vertical-align: middle;
+  color: var(--text-main);
+  /* Evita que las fechas/partes largas revienten la fila en 3 líneas */
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+tbody tr:nth-child(even) td { background-color: rgba(255, 255, 255, 0.014); }
+
+tbody tr { transition: background-color var(--transition); }
+
+tbody tr:hover td { background-color: var(--bg-hover) !important; }
+
+/* Celdas de contenido largo (imagen, dependencias) sí pueden truncarse */
+td[style*='text-overflow'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+/* Tarjeta de servidor: el botón de desvincular (position:absolute inline)
+   se montaba encima del icono 🖥️. Le reservamos su hueco y lo suavizamos. */
+.card:has(> button[title*='Desvincular']) > div[style*='justify-content: space-between'] {
+  padding-right: 34px;
+  /* nowrap: si envuelve, el icono 🖥️ salta de línea y desalinea la rejilla.
+     El título es el que debe ceder espacio (ver regla siguiente). */
+  flex-wrap: nowrap;
+}
+
+/* El nombre del servidor trunca en vez de empujar el icono 🖥️ a otra línea
+   (pasaba con "nodo-sucursal-07" y desalineaba la rejilla de tarjetas). */
+.card:has(> button[title*='Desvincular']) > div[style*='justify-content: space-between'] > div {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card:has(> button[title*='Desvincular']) > div[style*='justify-content: space-between'] > span {
+  flex-shrink: 0;
+}
+
+.card > button[title*='Desvincular'] {
+  top: 8px !important;
+  right: 8px !important;
+  width: 26px;
+  min-height: 26px;
+  padding: 0 !important;
+  font-size: 0.8rem !important;
+  border-radius: var(--radius-sm);
+  background-color: transparent !important;
+  border: 1px solid transparent !important;
+  opacity: 0;
+  transition: opacity var(--transition), background-color var(--transition),
+    border-color var(--transition);
+}
+
+.card:hover > button[title*='Desvincular'],
+.card > button[title*='Desvincular']:focus-visible { opacity: 1; }
+
+/* En táctil no existe hover: el botón va siempre visible */
+@media (hover: none) {
+  .card > button[title*='Desvincular'] { opacity: 1; }
+}
+
+/* Los botones a la derecha de la cabecera (p. ej. "Configurar Umbrales") se
+   sale de la tarjeta en pantallas estrechas si no pueden envolver. */
+.card > div[style*='margin-left: auto'] { flex-wrap: wrap; }
+
+/* Filas "titulo + texto auxiliar" en space-between: sin wrap, el texto
+   auxiliar se monta encima del título. Descendiente (no hijo directo): estas
+   filas viven anidadas dentro de grids, p. ej. la de Grupos de Servidores. */
+.card div[style*='justify-content: space-between'] {
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Un <select> dentro de una celda se estrujaba hasta mostrar una sola letra
+   ("Producción" -> "P"): forzamos ancho mínimo y que la tabla desplace. */
+td select { min-width: 120px; }
+
+/* Barras de herramientas con buscador + select: que repartan el ancho
+   en vez de estrangular el input.
+   OJO: sólo aplica a contenedores de FILA. En un `flex-direction: column`
+   (formularios) `flex-basis` pasaría a controlar la ALTURA y los inputs
+   se deformarían. */
+.card > div:has(> input)[style*='display: flex']:not([style*='flex-direction: column']) {
+  flex-wrap: wrap;
+}
+
+.card > div:has(> input)[style*='display: flex']:not([style*='flex-direction: column']) > input {
+  min-width: 150px;
+  flex: 1 1 150px;
+}
+
+.card > div:has(> input)[style*='display: flex']:not([style*='flex-direction: column']) > select {
+  flex: 0 1 180px;
+  min-width: 120px;
+  max-width: 200px;
+}
+
+/* Grupo de botones de acción dentro de la celda.
+   La columna se ancla a la derecha: con muchas columnas (7 en Servicios)
+   las acciones quedaban fuera de pantalla y eran inalcanzables. */
+td[style*='display: flex'] {
+  gap: 6px !important;
+  flex-wrap: nowrap;
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background-color: var(--bg-card) !important;
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 14px -12px rgba(2, 6, 18, 0.95);
+}
+
+td[style*='display: flex'] button {
+  padding: 4px 9px !important;
+  min-height: 26px;
+  font-size: 0.72rem !important;
+  border-radius: var(--radius-sm);
+}
+
+/* Los gráficos inline fijan 150px; aprovechan mejor el alto disponible */
+.card > div[style*='height: 150px'] { height: 210px !important; }
+
+thead th:first-child,
+tbody td:first-child { padding-left: 12px; }
+
+/* --------------------------------------------------------------------------
+   10. Insignias de estado
+   -------------------------------------------------------------------------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.badge-success {
+  background-color: var(--success-soft);
+  color: #4ade80;
+  border-color: rgba(var(--success-rgb), 0.3);
+}
+
+.badge-warning {
+  background-color: var(--warning-soft);
+  color: #fbbf24;
+  border-color: rgba(var(--warning-rgb), 0.3);
+}
+
+.badge-danger {
+  background-color: var(--danger-soft);
+  color: #f87171;
+  border-color: rgba(var(--danger-rgb), 0.3);
+}
+
+.badge-neutral {
+  background-color: rgba(var(--neutral-rgb), 0.16);
+  color: var(--text-muted);
+  border-color: rgba(var(--neutral-rgb), 0.3);
+}
+
+/* app.js pinta la insignia de "Entorno" con colores pensados para tema claro
+   (#b91c1c / #047857): sobre fondo oscuro quedan ilegibles. Los recoloreamos
+   con los equivalentes legibles de este tema. */
+span[style*='248, 113, 113'] {
+  background-color: rgba(var(--danger-rgb), 0.15) !important;
+  color: #fca5a5 !important;
+  border: 1px solid rgba(var(--danger-rgb), 0.32);
+  font-weight: 600;
+}
+
+span[style*='52, 211, 153'] {
+  background-color: rgba(var(--success-rgb), 0.15) !important;
+  color: #86efac !important;
+  border: 1px solid rgba(var(--success-rgb), 0.32);
+  font-weight: 600;
+}
+
+/* Punto de estado con pulso para "online" */
+.badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  flex-shrink: 0;
+}
+
+.badge:not([style*='rgba'])::before { display: none; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.badge[style*='16, 185, 129']::before {
+  background-color: var(--success);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* app.js pinta el badge de estado del servidor con border-radius/fuente inline */
+.badge[style*='padding: 4px'] {
+  padding: 4px 10px !important;
+  border-radius: var(--radius-pill) !important;
+  font-size: 0.75rem !important;
+  border: 1px solid transparent;
+}
+
+.badge[style*='padding: 4px'][style*='16,185,129'],
+.badge[style*='padding: 4px'][style*='16, 185, 129'] {
+  border-color: rgba(var(--success-rgb), 0.32);
+}
+
+.badge[style*='padding: 4px'][style*='239,68,68'],
+.badge[style*='padding: 4px'][style*='239, 68, 68'] {
+  border-color: rgba(var(--danger-rgb), 0.32);
+}
+
+/* --------------------------------------------------------------------------
+   11. Utilidades de tipografía (las define app.js)
+   -------------------------------------------------------------------------- */
 .text-2xl { font-size: 1.5rem; line-height: 2rem; }
 .font-bold { font-weight: 700; }
 .text-primary { color: var(--primary); }
@@ -228,42 +763,247 @@ input:focus, select:focus {
 .mt-2 { margin-top: 0.5rem; }
 .mb-4 { margin-bottom: 1rem; }
 
-/* Status Badges */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.125rem 0.5rem;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.badge-success { background-color: rgba(34, 197, 94, 0.1); color: var(--success); }
-.badge-warning { background-color: rgba(245, 158, 11, 0.1); color: var(--warning); }
-.badge-danger { background-color: rgba(239, 68, 68, 0.1); color: var(--danger); }
-
+/* --------------------------------------------------------------------------
+   12. Modales
+   -------------------------------------------------------------------------- */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  padding: var(--space-5);
+  background-color: rgba(3, 7, 18, 0.72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  overflow-y: auto;
+  animation: overlay-in 160ms ease both;
 }
 
-/* Custom Scrollbar */
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Los modales reutilizan .card, así que afinamos su caja aquí */
+.modal-overlay > .card {
+  margin-bottom: 0;
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100vh - var(--space-6));
+  border-color: var(--border);
+  box-shadow: var(--shadow-lg);
+  animation: modal-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Los anchos inline (400/520/640) mandan, pero none debe desbordar en móvil */
+.modal-overlay > .card[style*='width: 400'] { max-width: 440px; }
+.modal-overlay > .card[style*='width: 520'] { max-width: 560px; }
+.modal-overlay > .card[style*='width: 640'] { max-width: 720px; }
+
+/* Etiquetas de los formularios dentro de modales */
+.modal-overlay label[style*='display: block'] {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+/* Barra de progreso del modal de configuración */
+[style*='border-radius: 999'][style*='overflow: hidden'] {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-soft);
+}
+
+[style*='border-radius: 999'][style*='overflow: hidden'] > div {
+  background: linear-gradient(90deg, var(--primary), #818cf8);
+  transition: width 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* --------------------------------------------------------------------------
+   13. Scrollbars
+   -------------------------------------------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
+
 ::-webkit-scrollbar-track {
-  background: var(--bg-body);
+  background-color: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
+  background-color: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-pill);
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background-color: var(--text-subtle);
+}
+
+::-webkit-scrollbar-corner { background-color: transparent; }
+
+/* --------------------------------------------------------------------------
+   14. Foco visible y accesibilidad
+   -------------------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.nav-item:focus-visible { outline-offset: -2px; }
+
+/* Los objetivos táctiles pequeños mantienen un área usable */
+@media (pointer: coarse) {
+  button { min-height: 38px; }
+  td[style*='display: flex'] button { min-height: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --border: #46618c;
+    --border-soft: #385070;
+    --text-muted: #b6c4db;
+    --text-subtle: #9aabc6;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   15. Responsive
+   -------------------------------------------------------------------------- */
+@media (max-width: 1200px) {
+  .main-content { padding: var(--space-5); }
+  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+}
+
+@media (max-width: 1024px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* Móvil: la barra lateral pasa a ser una cabecera horizontal compacta.
+   Antes se apilaba verticalmente y ocupaba media pantalla. */
+@media (max-width: 768px) {
+  .app-container { flex-direction: column; }
+
+  .sidebar,
+  .sidebar.sidebar-collapsed {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+
+  .sidebar-header {
+    height: auto;
+    padding: 0 var(--space-3);
+    border-bottom: none;
+    border-right: 1px solid var(--border-soft);
+    font-size: 0;
+  }
+
+  .sidebar-header span:first-child { font-size: 1.15rem; }
+
+  .sidebar-nav {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) 0;
+    overflow: visible;
+  }
+
+  .nav-item { padding: 8px 10px; }
+
+  .sidebar-collapsed .nav-item { padding: 8px 10px; }
+
+  .nav-item.active::before {
+    top: auto;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 18px;
+    height: 2px;
+    border-radius: var(--radius-pill) var(--radius-pill) 0 0;
+  }
+
+  .sidebar-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: 0;
+    margin-left: auto;
+    padding: 0 var(--space-3);
+    border-top: none;
+  }
+
+  .sidebar-collapsed .sidebar-footer > div { display: none; }
+
+  .sidebar-footer button { width: auto !important; margin-bottom: 0 !important; }
+
+  .main-content,
+  .main-content.main-content-collapsed {
+    margin-left: 0;
+    padding: var(--space-4);
+  }
+
+  .card { padding: var(--space-4); }
+
+  .modal-overlay { padding: var(--space-3); align-items: flex-start; }
+  .modal-overlay > .card { max-height: none; }
+
+  /* Los botones de acción pasan a ocupar su propia fila completa */
+  .card > div[style*='margin-left: auto'] {
+    margin-left: 0 !important;
+    width: 100%;
+  }
+
+  .card > div[style*='margin-left: auto'] > button { flex: 1 1 auto; }
+
+  .card > div:has(> input)[style*='display: flex'] > select {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  /* El toggle de contraído no aporta nada cuando la barra ya es horizontal */
+  .sidebar-header button { display: none; }
+}
+
+@media (max-width: 560px) {
+  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3); }
+  .card-header { gap: var(--space-2); }
+  .card > div[style*='font-size: 2rem'] { font-size: 1.5rem !important; }
+  .main-content { padding: var(--space-3); }
 }
